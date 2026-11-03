@@ -209,3 +209,28 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator {
     border-color: var(--green);
     color: var(--green);
 }
+
+.brand {
+    gap: 10px;
+}
+.brand-mark {
+    display: block;
+    width: 38px;
+    height: 40px;
+    flex: 0 0 38px;
+    object-fit: contain;
+    background: transparent;
+    border-radius: 5px;
+    margin-right: 2px;
+}
+.brand-name {
+    color: inherit;
+    letter-spacing: -0.08em;
+}
+@media (max-width: 700px) {
+    .sidebar .brand-mark {
+        width: 38px;
+        height: 40px;
+        flex-basis: 38px;
+    }
+}

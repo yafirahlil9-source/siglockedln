@@ -15,7 +15,7 @@
 <body>
   <div id="loginView" class="login-wrap">
     <div class="login-art">
-      <div class="brand brand-light"><span class="brand-mark">E</span> Siglockedin<span></span></div>
+      <div class="brand brand-light"><img class="brand-mark" src="assets/logo-smk-sig.png" alt="Logo SMK SIG"><span class="brand-name">Siglockedin</span></div>
       <div class="art-copy"><span class="eyebrow">RUANG TUMBUH BERSAMA</span>
         <h1>Belajar lebih baik,<br><em>bareng-bareng.</em></h1>
         <p>Tempat belajar, berbagi informasi sekolah, dan saling mendukung dengan nyaman.</p>
@@ -23,7 +23,7 @@
       <div class="art-bottom"><span>✳</span> Satu ruang untuk seluruh warga sekolah</div>
     </div>
     <div class="login-panel">
-      <div class="mobile-brand brand"><span class="brand-mark">E</span> Siglockedin<span></span></div>
+      <div class="mobile-brand brand"><img class="brand-mark" src="assets/logo-smk-sig.png" alt="Logo SMK SIG"><span class="brand-name">Siglockedin</span></div>
       <div class="login-box">
         <div class="welcome-icon">✦</div>
         <p class="eyebrow">RUANG BELAJAR TERHUBUNG</p>
@@ -50,8 +50,8 @@
               <option value="GURU">Guru</option>
               <option value="STAF">Staf</option>
             </select><label for="registerIdentity">NIS / NIP <small class="muted" style="font-size:11px">(Opsional)</small></label><input id="registerIdentity" maxlength="30"
-              placeholder="Nomor induk (opsional)"><label for="registerDetail" id="registerDetailLabel">Identitas</label><input id="registerDetail"
-              maxlength="120" placeholder="Masukkan identitas (misal: kelas siswa, mapel guru, atau bebas)">
+              placeholder="Nomor induk (opsional)"><label for="registerDetail" id="registerDetailLabel">Kelas</label><input id="registerDetail"
+              maxlength="80" placeholder="Contoh: XI RPL 1" required>
             <p id="registerError" class="error hidden"></p><button class="btn btn-primary full"
               type="submit">Daftar</button><button class="btn btn-google full" id="googleRegister" type="button">Daftar
               dengan Google</button>
@@ -65,7 +65,7 @@
   </div>
   <div id="appView" class="app hidden">
     <aside class="sidebar">
-      <a class="brand" href="#" data-page="beranda"><span class="brand-mark">E</span> Siglockedin<span></span></a>
+      <a class="brand" href="#" data-page="beranda"><img class="brand-mark" src="assets/logo-smk-sig.png" alt="Logo SMK SIG"><span class="brand-name">Siglockedin</span></a>
       <div class="school-label">RUANG SEKOLAH</div>
       <nav id="sideNav"></nav>
       <div class="sidebar-bottom">
@@ -91,15 +91,7 @@
   <div id="toast" class="toast"></div>
   <script src="app.js"></script>
   <script>
-    document.getElementById('registerRole').addEventListener('change', function () {
-      var placeholders = {
-        SISWA: 'Identitas siswa (contoh: XI RPL 1 atau bebas)',
-        GURU: 'Identitas guru (contoh: Matematika atau bebas)',
-        STAF: 'Identitas staf (contoh: Perpustakaan / Tata Usaha atau bebas)'
-      };
-      document.getElementById('registerDetailLabel').textContent = 'Identitas';
-      document.getElementById('registerDetail').placeholder = placeholders[this.value] || 'Masukkan identitas (bebas diisi)';
-    });
+    document.getElementById('registerRole').addEventListener('change', function () { var labels = { SISWA: 'Kelas', GURU: 'Mata pelajaran', STAF: 'Bidang tugas' }; var placeholders = { SISWA: 'Contoh: XI RPL 1', GURU: 'Contoh: Matematika', STAF: 'Contoh: Perpustakaan' }; document.getElementById('registerDetailLabel').textContent = labels[this.value] || 'Kelas / bidang'; document.getElementById('registerDetail').placeholder = placeholders[this.value] || '' });
   </script>
   <script src="attendance-bridge.js"></script>
   <script src="search-bridge.js"></script>

@@ -51,7 +51,7 @@ renderSearch = async function () {
           const profile = await api(`/api/search/${encodeURIComponent(button.dataset.dbPerson)}/profile`);
           const person = profile.person;
           const roleName = { SISWA: 'Siswa', GURU: 'Guru', STAF: 'Staf', ADMIN: 'Admin' }[person.role] || person.role;
-          const detailLabel = { SISWA: 'Identitas', GURU: 'Identitas', STAF: 'Identitas', ADMIN: 'Bagian' }[person.role] || 'Identitas';
+          const detailLabel = { SISWA: 'Kelas', GURU: 'Mata pelajaran', STAF: 'Bidang tugas', ADMIN: 'Bagian' }[person.role] || 'Detail';
           const canSeeMetrics = profile.canSeeAcademicMetrics;
           const isStudent = person.role === 'SISWA';
           const average = !isStudent || !canSeeMetrics ? '—' : profile.averageScore === null ? 'Belum ada' : profile.averageScore;
