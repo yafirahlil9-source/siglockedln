@@ -1,31 +1,52 @@
-const path = require('path');
-const Database = require('better-sqlite3');
+require('dotenv').config();
 
-const dataDir = path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
-const databasePath = path.join(dataDir, 'edusmart.sqlite');
-const db = new Database(databasePath, { readonly: true, fileMustExist: true });
+const mysql = require('mysql2/promise');
 
-try {
-  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-  console.log(`Database: ${databasePath}`);
-  console.log('\nTables:');
-  console.table(tables);
+async function inspectDatabase() {
+  const connection = await mysql.createConnection({
+    host: process.env.DB_HOST || 'localhost',
+    port: Number(process.env.DB_PORT || 3306),
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'sekolah_hub'
+  });
 
-  if (tables.some(table => table.name === 'users')) {
-    console.log('\nAccounts:');
-    console.table(db.prepare('SELECT full_name AS name, email, role, status, created_at AS createdAt FROM users ORDER BY created_at').all());
+  try {
+    const [tables] = await connection.query(
+      'SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name'
+    );
+    console.log(`Database: ${process.env.DB_NAME || 'sekolah_hub'}`);
+    console.log('\nTables:');
+    console.table(tables);
+
+    const tableNames = new Set(tables.map(table => table.name));
+    if (tableNames.has('users')) {
+      const [accounts] = await connection.query(
+        'SELECT full_name AS name, email, role, status, created_at AS createdAt FROM users ORDER BY created_at'
+      );
+      console.log('\nAccounts:');
+      console.table(accounts);
+    }
+
+    for (const table of ['posts', 'comments', 'assignments', 'attendance', 'notifications']) {
+      if (!tableNames.has(table)) continue;
+      const [[{ count }]] = await connection.query(`SELECT COUNT(*) AS count FROM \`${table}\``);
+      console.log(`${table}: ${count} rows`);
+    }
+
+    if (tableNames.has('attendance')) {
+      const [attendance] = await connection.query(
+        'SELECT verification, COUNT(*) AS count FROM attendance GROUP BY verification ORDER BY verification'
+      );
+      console.log('\nAttendance by verification state:');
+      console.table(attendance);
+    }
+  } finally {
+    await connection.end();
   }
-
-  for (const table of ['posts', 'comments', 'assignments', 'attendance', 'notifications']) {
-    if (!tables.some(item => item.name === table)) continue;
-    const count = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count;
-    console.log(`${table}: ${count} rows`);
-  }
-
-  if (tables.some(table => table.name === 'attendance')) {
-    console.log('\nAttendance by verification state:');
-    console.table(db.prepare('SELECT verification, COUNT(*) AS count FROM attendance GROUP BY verification ORDER BY verification').all());
-  }
-} finally {
-  db.close();
 }
+
+inspectDatabase().catch(error => {
+  console.error('Database inspection failed:', error.message || error.code || error);
+  process.exitCode = 1;
+});

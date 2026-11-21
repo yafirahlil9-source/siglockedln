@@ -246,7 +246,7 @@ async function setupApp() {
         ]);
         topics = postData.posts.map(post => ({
             ...post,
-            time: new Date(post.createdAt + 'Z').getTime(),
+            time: new Date(post.createdAt).getTime(),
             owner: (post.isOwner || (currentUser && currentUser.role === 'admin')) ? 'demo' : 'other',
             canDelete: Boolean(post.canDelete || post.isOwner || (currentUser && currentUser.role === 'admin'))
         }));
@@ -390,7 +390,7 @@ function topicHTML(t) {
                     '<b>Anonim</b>';
                 return `<div class="comment-item">
                     <span class="anon-avatar" style="width:26px;height:26px;font-size:13px;font-weight:700">${(isAdmin && c.authorName) ? esc(c.authorName.charAt(0).toUpperCase()) : '◌'}</span>
-                    <p>${commentAuthor} · ${ago(c.time || (c.createdAt ? new Date(c.createdAt + 'Z').getTime() : Date.now()))}<br>${esc(c.body)}</p>
+                    <p>${commentAuthor} · ${ago(c.time || (c.createdAt ? new Date(c.createdAt).getTime() : Date.now()))}<br>${esc(c.body)}</p>
                 </div>`;
             }).join('') : '<div class="empty-state" style="padding:12px">Belum ada komentar.</div>'}
             <div class="comment-input"><input id="comment-input-${t.id}" maxlength="500" placeholder="Tulis komentar..."><button data-send-comment="${t.id}">Kirim</button></div>
@@ -401,7 +401,7 @@ async function reloadPosts() {
     let result = await api('/api/posts');
     topics = result.posts.map(post => ({
         ...post,
-        time: post.createdAt ? new Date(post.createdAt + 'Z').getTime() : Date.now(),
+        time: post.createdAt ? new Date(post.createdAt).getTime() : Date.now(),
         owner: (post.isOwner || (currentUser && currentUser.role === 'admin')) ? 'demo' : 'other',
         canDelete: Boolean(post.canDelete || post.isOwner || (currentUser && currentUser.role === 'admin'))
     }));
