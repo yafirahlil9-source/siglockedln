@@ -30,7 +30,7 @@ let notifications = [], adminAccounts = [];
 let schoolSettings = { latitude: '-6.200000', longitude: '106.816666', radius: 100, open: '06:30', late: '07:15', cutoff: '23:59', alpha: 3 };
 let identityRequests = [];
 const userNav = [['beranda', '⌂', 'Beranda'], ['cari', '⌕', 'Cari'], ['absen', '◷', 'Absen'], ['tugas', '▤', 'Tugas'], ['profil', '◉', 'Profil']];
-const adminNav = [['beranda', '⌂', 'Beranda'], ['cari', '⌕', 'Cari'], ['kehadiran', '◷', 'Kehadiran'], ['laporan', '▥', 'Laporan'], ['profil', '◉', 'Profil']];
+const adminNav = [['beranda', '⌂', 'Beranda'], ['cari', '⌕', 'Cari'], ['kehadiran', '◷', 'Kehadiran'], ['kelas', '▦', 'Kelas'], ['laporan', '▥', 'Laporan'], ['profil', '◉', 'Profil']];
 function persist() { localStorage.setItem('sh_topics', JSON.stringify(topics)); localStorage.setItem('sh_tasks', JSON.stringify(tasks)); localStorage.setItem('sh_att', JSON.stringify(attendance)) }
 function toast(msg) { let el = $('#toast'); el.textContent = msg; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2500) }
 function esc(s = '') { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) }
@@ -69,24 +69,437 @@ renderUserAttendance = async function () {
 $('#togglePass').onclick = () => { let p = $('#password'); p.type = p.type === 'password' ? 'text' : 'password' };
 const serverAttendanceRenderer = renderUserAttendance;
 renderUserAttendance = serverAttendanceRenderer;
-$('#authSwitch').onclick = () => { let registering = $('#registerView').classList.toggle('hidden'); $('#loginForm').classList.toggle('hidden', registering); $('#googleLogin').classList.toggle('hidden', registering); $('#authTitle').textContent = registering ? 'Buat akun EduSmart' : 'Masuk ke EduSmart'; $('#authDescription').textContent = registering ? 'Lengkapi data dan akun Anda langsung aktif setelah mendaftar.' : 'Gunakan email dan kata sandi akun Anda.'; $('#authSwitchText').textContent = registering ? 'Sudah punya akun?' : 'Belum punya akun?'; $('#authSwitch').textContent = registering ? 'Kembali ke masuk' : 'Daftar akun sekolah' };
-$('#loginForm').onsubmit = async e => { e.preventDefault(); $('#loginError').classList.add('hidden'); try { let result = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: $('#username').value.trim(), password: $('#password').value }) }); enterApp(result.user) } catch (error) { $('#loginError').textContent = error.message; $('#loginError').classList.remove('hidden') } };
-$('#registerForm').onsubmit = async e => { e.preventDefault(); $('#registerError').classList.add('hidden'); let data = { name: $('#registerName').value.trim(), email: $('#registerEmail').value.trim(), password: $('#registerPassword').value, role: $('#registerRole').value, identityNumber: $('#registerIdentity').value.trim(), detail: $('#registerDetail').value.trim() }; try { let result = await api('/api/auth/register', { method: 'POST', body: JSON.stringify(data) }); $('#registerPassword').value = ''; if (result.autoActivated) { let session = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: data.email, password: data.password }) }); enterApp(session.user); toast('Akun langsung aktif. Selamat datang di EduSmart.') } else { $('#authSwitch').click(); $('#loginError').textContent = result.message; $('#loginError').classList.remove('hidden') } } catch (error) { $('#registerError').textContent = error.message; $('#registerError').classList.remove('hidden') } };
+
+let isRegisterMode = false;
+async function populateRegisterClasses() {
+    try {
+        let res = await api('/api/classes');
+        let classes = res.classes || [];
+        let select = $('#registerDetail');
+        if (select) {
+            select.innerHTML = '<option value="">-- Pilih Kelas --</option>' +
+                classes.map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join('');
+        }
+    } catch (e) {
+        let select = $('#registerDetail');
+        if (select) {
+            select.innerHTML = '<option value="">-- Pilih Kelas --</option>' +
+                ['X RPL 1', 'X RPL 2', 'XI RPL 1', 'XI RPL 2', 'XII RPL 1', 'XII RPL 2'].map(c => `<option value="${c}">${c}</option>`).join('');
+        }
+    }
+}
+populateRegisterClasses();
+
+function updateRegisterRoleUI() {
+    let role = $('#registerRole') ? $('#registerRole').value : 'SISWA';
+    let classGroup = $('#registerClassGroup');
+    let classSelect = $('#registerDetail');
+    if (classGroup && classSelect) {
+        if (role === 'SISWA') {
+            classGroup.classList.remove('hidden');
+            classSelect.required = true;
+        } else {
+            // user guru / user admin / staf: kolom kelas dihapus
+            classGroup.classList.add('hidden');
+            classSelect.required = false;
+            classSelect.value = '';
+        }
+    }
+}
+if ($('#registerRole')) $('#registerRole').onchange = updateRegisterRoleUI;
+
+function setAuthMode(register) {
+    isRegisterMode = register;
+    $('#loginForm').classList.toggle('hidden', register);
+    $('#registerView').classList.toggle('hidden', !register);
+    $('#googleLogin').classList.toggle('hidden', register || !googleLoginEnabled);
+    $('#googleRegister').classList.toggle('hidden', !register || !googleLoginEnabled);
+    $('#authTitle').textContent = register ? 'Daftar Akun Baru' : 'Masuk ke Siglockedin';
+    $('#authDescription').textContent = register ? 'Lengkapi formulir untuk mendaftar akun di Siglockedin.' : 'Gunakan email dan kata sandi akun Anda.';
+    $('#authSwitchText').textContent = register ? 'Sudah punya akun?' : 'Belum punya akun?';
+    $('#authSwitch').textContent = register ? 'Masuk ke akun' : 'Daftar akun';
+    $('#loginError').classList.add('hidden');
+    $('#registerError').classList.add('hidden');
+    if (register) {
+        updateRegisterRoleUI();
+        populateRegisterClasses();
+    }
+}
+$('#authSwitch').onclick = () => setAuthMode(!isRegisterMode);
+
+$('#loginForm').onsubmit = async e => {
+    e.preventDefault();
+    $('#loginError').classList.add('hidden');
+    try {
+        let result = await api('/api/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({ email: $('#username').value.trim(), password: $('#password').value })
+        });
+        enterApp(result.user);
+    } catch (error) {
+        $('#loginError').textContent = error.message;
+        $('#loginError').classList.remove('hidden');
+    }
+};
+
+$('#registerForm').onsubmit = async e => {
+    e.preventDefault();
+    $('#registerError').classList.add('hidden');
+    let role = $('#registerRole').value;
+    let detail = role === 'SISWA' ? ($('#registerDetail') ? $('#registerDetail').value.trim() : '') : '';
+    if (role === 'SISWA' && !detail) {
+        $('#registerError').textContent = 'Harap pilih kelas Anda terlebih dahulu.';
+        $('#registerError').classList.remove('hidden');
+        return;
+    }
+    let data = {
+        name: $('#registerName').value.trim(),
+        email: $('#registerEmail').value.trim(),
+        password: $('#registerPassword').value,
+        role: role,
+        identityNumber: $('#registerIdentity').value.trim(),
+        detail: detail
+    };
+    try {
+        let result = await api('/api/auth/register', { method: 'POST', body: JSON.stringify(data) });
+        $('#registerPassword').value = '';
+        if (result.autoActivated) {
+            let session = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: data.email, password: data.password }) });
+            enterApp(session.user);
+            toast('Akun langsung aktif. Selamat datang di Siglockedin.');
+        } else {
+            setAuthMode(false);
+            $('#loginError').textContent = result.message || 'Pendaftaran berhasil. Silakan masuk.';
+            $('#loginError').classList.remove('hidden');
+        }
+    } catch (error) {
+        $('#registerError').textContent = error.message;
+        $('#registerError').classList.remove('hidden');
+    }
+};
+
 $('#googleLogin').onclick = () => { window.location.assign('/auth/google') };
-$('#googleRegister').onclick = async () => { let data = { name: $('#registerName').value.trim(), email: $('#registerEmail').value.trim(), role: $('#registerRole').value, identityNumber: $('#registerIdentity').value.trim(), detail: $('#registerDetail').value.trim() }; try { let result = await api('/api/auth/google-intent', { method: 'POST', body: JSON.stringify(data) }); window.location.assign(result.url) } catch (error) { $('#registerError').textContent = error.message; $('#registerError').classList.remove('hidden') } };
-if (new URLSearchParams(location.search).get('auth') === 'pending') { $('#loginError').textContent = 'Pendaftaran Google berhasil. Akun menunggu aktivasi admin.'; $('#loginError').classList.remove('hidden') } else if (new URLSearchParams(location.search).has('auth')) { $('#loginError').textContent = 'Login Google tidak berhasil. Coba kembali atau gunakan email dan kata sandi.'; $('#loginError').classList.remove('hidden') }
-api('/api/auth/session').then(result => { googleLoginEnabled = result.googleLoginEnabled; $('#googleLogin').classList.toggle('hidden', !googleLoginEnabled); $('#googleRegister').classList.toggle('hidden', !googleLoginEnabled); if (result.user) enterApp(result.user) }).catch(() => { $('#loginError').textContent = 'Server belum siap. Coba muat ulang halaman.'; $('#loginError').classList.remove('hidden') });
+$('#googleRegister').onclick = async () => {
+    let role = $('#registerRole').value;
+    let detail = role === 'SISWA' ? ($('#registerDetail') ? $('#registerDetail').value.trim() : '') : '';
+    if (role === 'SISWA' && !detail) {
+        $('#registerError').textContent = 'Harap pilih kelas Anda terlebih dahulu.';
+        $('#registerError').classList.remove('hidden');
+        return;
+    }
+    let data = {
+        name: $('#registerName').value.trim(),
+        email: $('#registerEmail').value.trim(),
+        role: role,
+        identityNumber: $('#registerIdentity').value.trim(),
+        detail: detail
+    };
+    try {
+        let result = await api('/api/auth/google-intent', { method: 'POST', body: JSON.stringify(data) });
+        window.location.assign(result.url);
+    } catch (error) {
+        $('#registerError').textContent = error.message;
+        $('#registerError').classList.remove('hidden');
+    }
+};
+
+if (new URLSearchParams(location.search).get('auth') === 'pending') {
+    $('#loginError').textContent = 'Pendaftaran Google berhasil. Akun menunggu aktivasi admin.';
+    $('#loginError').classList.remove('hidden');
+} else if (new URLSearchParams(location.search).has('auth')) {
+    $('#loginError').textContent = 'Login Google tidak berhasil. Coba kembali atau gunakan email dan kata sandi.';
+    $('#loginError').classList.remove('hidden');
+}
+
+api('/api/auth/session').then(result => {
+    googleLoginEnabled = result.googleLoginEnabled;
+    $('#googleLogin').classList.toggle('hidden', !googleLoginEnabled);
+    $('#googleRegister').classList.toggle('hidden', !googleLoginEnabled);
+    if (result.user) enterApp(result.user);
+}).catch(() => {
+    $('#loginError').textContent = 'Server belum siap. Coba muat ulang halaman.';
+    $('#loginError').classList.remove('hidden');
+});
 let googleLoginEnabled = false;
-function enterApp(user) { currentUser = user; $('#loginView').classList.add('hidden'); $('#appView').classList.remove('hidden'); setupApp() }
-async function setupApp() { let role = currentUser.role; $('#topUser').textContent = currentUser.name; $('#topRole').textContent = role === 'siswa' ? 'Siswa' : role === 'guru' ? 'Guru' : role === 'staf' ? 'Staf' : 'Admin sekolah'; $('#today').textContent = new Date().toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' }); renderNav(); goPage('beranda'); updateNotificationBadge(); try { let [postData, taskData, settingsData] = await Promise.all([api('/api/posts'), api('/api/assignments'), api('/api/attendance/settings')]); topics = postData.posts.map(post => ({ ...post, time: new Date(post.createdAt + 'Z').getTime(), owner: post.authorId === currentUser.id ? 'demo' : 'other' })); tasks = taskData.assignments.map(task => ({ ...task, desc: task.description || '', status: 'Belum', category: task.category || 'Teori', score: null, due: task.due.slice(0, 10) })); schoolSettings = { ...schoolSettings, latitude: String(settingsData.settings.latitude), longitude: String(settingsData.settings.longitude), radius: settingsData.settings.radiusMeters, open: settingsData.settings.openTime, late: settingsData.settings.lateAfter, close: settingsData.settings.closeTime }; if (currentPage === 'beranda') renderHome() } catch (error) { toast('Sebagian data belum dapat dimuat dari server.') } }
-function renderNav() { let items = currentUser.role === 'admin' ? adminNav : userNav; $('#sideNav').innerHTML = items.map(([id, icon, label]) => `<a href="#" class="nav-link ${currentPage === id ? 'active' : ''}" data-page="${id}" aria-label="${label}" title="${label}"><span class="nav-icon">${icon}</span><span>${label}</span></a>`).join(''); $$('[data-page]').forEach(a => a.onclick = e => { e.preventDefault(); goPage(a.dataset.page) }) }
-function goPage(page) { if (currentPage === 'absen' && page !== 'absen' && cameraStream) { cameraStream.getTracks().forEach(track => track.stop()); cameraStream = null } let adminOnly = ['kehadiran', 'laporan', 'akun', 'kalender', 'aturan', 'pengingat', 'identitas']; if (adminOnly.includes(page) && currentUser.role !== 'admin') { page = 'beranda'; toast('Halaman ini hanya tersedia untuk admin sekolah.') } if (page === 'absen' && currentUser.role === 'admin') page = 'kehadiran'; currentPage = page; let titles = { beranda: 'Beranda', cari: 'Cari warga sekolah', tugas: 'Tugas', profil: 'Profil', absen: 'Absen wajah', kehadiran: 'Kehadiran', laporan: 'Laporan', notifikasi: 'Notifikasi', akun: 'Pengelolaan akun', kalender: 'Kalender sekolah', aturan: 'Aturan kehadiran', pengingat: 'Pengingat kehadiran', identitas: 'Buka identitas' }; $('#pageName').textContent = titles[page] || 'Beranda'; renderNav(); let f = { beranda: renderHome, cari: renderSearch, tugas: renderTasks, profil: renderProfile, absen: renderAttendance, kehadiran: renderAttendance, laporan: renderReports, notifikasi: renderNotifications, akun: renderAdminAccounts, kalender: renderCalendar, aturan: renderAttendanceSettings, pengingat: renderReminders, identitas: renderIdentityRequests }; if (!f[page]) { currentPage = 'beranda'; renderNav(); renderHome() } else { f[page](); if (page === 'profil' && currentUser.role === 'admin') addAdminShortcuts() } }
+
+function enterApp(user) {
+    currentUser = user;
+    $('#loginView').classList.add('hidden');
+    $('#appView').classList.remove('hidden');
+    setupApp();
+}
+
+async function setupApp() {
+    let role = currentUser.role;
+    $('#topUser').textContent = currentUser.name;
+    $('#topRole').textContent = role === 'siswa' ? 'Siswa' : role === 'guru' ? 'Guru' : role === 'staf' ? 'Staf' : 'Admin sekolah';
+    $('#today').textContent = new Date().toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' });
+    renderNav();
+    goPage('beranda');
+    updateNotificationBadge();
+    try {
+        let [postData, taskData, settingsData, classesData] = await Promise.all([
+            api('/api/posts'),
+            api('/api/assignments'),
+            api('/api/attendance/settings'),
+            api('/api/classes').catch(() => ({ classes: [] }))
+        ]);
+        topics = postData.posts.map(post => ({
+            ...post,
+            time: new Date(post.createdAt + 'Z').getTime(),
+            owner: (post.isOwner || (currentUser && currentUser.role === 'admin')) ? 'demo' : 'other',
+            canDelete: Boolean(post.canDelete || post.isOwner || (currentUser && currentUser.role === 'admin'))
+        }));
+        if (classesData.classes) {
+            window.availableClasses = ['Semua Kelas', ...classesData.classes.map(c => c.name)];
+        } else if (taskData.availableClasses) {
+            window.availableClasses = taskData.availableClasses;
+        }
+        tasks = (taskData.assignments || []).map(mapAssignment);
+        schoolSettings = {
+            ...schoolSettings,
+            latitude: String(settingsData.settings.latitude),
+            longitude: String(settingsData.settings.longitude),
+            radius: settingsData.settings.radiusMeters,
+            open: settingsData.settings.openTime,
+            late: settingsData.settings.lateAfter,
+            close: settingsData.settings.closeTime
+        };
+        if (currentPage === 'beranda') renderHome();
+    } catch (error) {
+        toast('Sebagian data belum dapat dimuat dari server.');
+    }
+}
+
+function renderNav() {
+    let items = currentUser.role === 'admin' ? adminNav : userNav;
+    $('#sideNav').innerHTML = items.map(([id, icon, label]) => `<a href="#" class="nav-link ${currentPage === id ? 'active' : ''}" data-page="${id}" aria-label="${label}" title="${label}"><span class="nav-icon">${icon}</span><span>${label}</span></a>`).join('');
+    $$('[data-page]').forEach(a => a.onclick = e => { e.preventDefault(); goPage(a.dataset.page) });
+}
+
+function goPage(page) {
+    if (currentPage === 'absen' && page !== 'absen' && cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+    }
+    let adminOnly = ['kehadiran', 'laporan', 'akun', 'kalender', 'aturan', 'pengingat', 'identitas', 'kelas'];
+    if (adminOnly.includes(page) && currentUser.role !== 'admin') {
+        page = 'beranda';
+        toast('Halaman ini hanya tersedia untuk admin sekolah.');
+    }
+    if (page === 'absen' && currentUser.role === 'admin') page = 'kehadiran';
+    currentPage = page;
+    let titles = {
+        beranda: 'Beranda',
+        cari: 'Cari warga sekolah',
+        tugas: 'Tugas',
+        profil: 'Profil',
+        absen: 'Absen wajah',
+        kehadiran: 'Kehadiran',
+        kelas: 'Pengelolaan data kelas',
+        laporan: 'Laporan',
+        notifikasi: 'Notifikasi',
+        akun: 'Pengelolaan akun',
+        kalender: 'Kalender sekolah',
+        aturan: 'Aturan kehadiran',
+        pengingat: 'Pengingat kehadiran',
+        identitas: 'Buka identitas'
+    };
+    $('#pageName').textContent = titles[page] || 'Beranda';
+    renderNav();
+    let f = {
+        beranda: renderHome,
+        cari: renderSearch,
+        tugas: renderTasks,
+        profil: renderProfile,
+        absen: renderAttendance,
+        kehadiran: renderAttendance,
+        kelas: renderAdminClasses,
+        laporan: renderReports,
+        notifikasi: renderNotifications,
+        akun: renderAdminAccounts,
+        kalender: renderCalendar,
+        aturan: renderAttendanceSettings,
+        pengingat: renderReminders,
+        identitas: renderIdentityRequests
+    };
+    if (!f[page]) {
+        currentPage = 'beranda';
+        renderNav();
+        renderHome();
+    } else {
+        f[page]();
+        if (page === 'profil' && currentUser.role === 'admin') addAdminShortcuts();
+    }
+}
 $('#logoutBtn').onclick = async () => { if (cameraStream) cameraStream.getTracks().forEach(track => track.stop()); cameraStream = null; await api('/api/auth/logout', { method: 'POST', body: '{}' }).catch(() => { }); currentUser = null; $('#appView').classList.add('hidden'); $('#loginView').classList.remove('hidden'); $('#password').value = ''; $('#username').value = ''; toast('Anda telah keluar dari akun.') }; $('#profileShortcut').onclick = () => goPage('profil'); $('#notificationBtn').onclick = () => goPage('notifikasi');
 function heading(kicker, title, desc, action = '') { return `<div class="page-heading"><div><div class="eyebrow">${kicker}</div><h1>${title}</h1><p>${desc}</p></div>${action ? `<div class="heading-actions">${action}</div>` : ''}</div>` }
 function stat(icon, num, label, change = '') { return `<div class="card stat-card"><div class="stat-top"><span class="stat-icon">${icon}</span>${change ? `<span class="stat-change">${change}</span>` : ''}</div><div class="stat-number">${num}</div><div class="stat-label">${label}</div></div>` }
-function topicHTML(t) { let canDelete = t.owner === 'demo' || t.canDelete || (currentUser && currentUser.role === 'admin'); return `<article class="topic"><div class="topic-head"><div class="anon-avatar">◌</div><div><b>Warga sekolah</b><small>${ago(t.time)}</small></div><span class="anon-tag">● Anonim</span></div><h4>${esc(t.title)}</h4><p>${esc(t.body)}</p><div class="topic-actions"><button class="text-action ${t.liked ? 'liked' : ''}" data-like="${t.id}">♡ ${t.likes} Suka</button><button class="text-action" data-comments="${t.id}">▱ ${t.comments.length} Komentar</button>${canDelete ? `<button class="text-action text-danger" data-delete-topic="${t.id}">Hapus</button>` : ''}</div><div class="comment-box hidden" id="comments-${t.id}">${t.comments.length ? t.comments.map(c => `<div class="comment-item"><span class="anon-avatar" style="width:26px;height:26px;font-size:14px">◌</span><p><b>Anonim</b> · ${ago(c.time)}<br>${esc(c.body)}</p></div>`).join('') : '<div class="empty-state" style="padding:12px">Belum ada komentar.</div>'}<div class="comment-input"><input id="comment-input-${t.id}" maxlength="500" placeholder="Tulis komentar anonim..."><button data-send-comment="${t.id}">Kirim</button></div></div></article>` }
-async function reloadPosts() { let result = await api('/api/posts'); topics = result.posts.map(post => ({ ...post, time: post.createdAt ? new Date(post.createdAt).getTime() : Date.now(), owner: (post.isOwner || (currentUser && currentUser.role === 'admin')) ? 'demo' : 'other', canDelete: Boolean(post.canDelete || post.isOwner || (currentUser && currentUser.role === 'admin')) })) }
-bindTopicEvents = function () { if ($('#topicForm')) $('#topicForm').onsubmit = async event => { event.preventDefault(); try { await api('/api/posts', { method: 'POST', body: JSON.stringify({ title: $('#topicTitle').value.trim(), body: $('#topicBody').value.trim() }) }); await reloadPosts(); renderHome(); toast('Topik tersimpan di server.') } catch (error) { toast(error.message) } }; $$('[data-like]').forEach(button => button.onclick = async () => { try { await api(`/api/posts/${button.dataset.like}/like`, { method: 'POST', body: '{}' }); await reloadPosts(); renderHome() } catch (error) { toast(error.message) } }); $$('[data-comments]').forEach(button => button.onclick = () => $('#comments-' + button.dataset.comments).classList.toggle('hidden')); $$('[data-send-comment]').forEach(button => button.onclick = async () => { let postId = button.dataset.sendComment, input = $('#comment-input-' + postId); try { await api(`/api/posts/${postId}/comments`, { method: 'POST', body: JSON.stringify({ body: input.value.trim() }) }); await reloadPosts(); renderHome(); $('#comments-' + postId)?.classList.remove('hidden') } catch (error) { toast(error.message) } }); $$('[data-delete-topic]').forEach(button => button.onclick = async () => { if (!confirm('Apakah Anda yakin ingin menghapus topik ini?')) return; try { await api(`/api/posts/${button.dataset.deleteTopic}`, { method: 'DELETE' }); await reloadPosts(); renderHome(); toast('Topik berhasil dihapus.') } catch (error) { toast(error.message) } }); $$('[data-page]').forEach(link => link.onclick = event => { event.preventDefault(); goPage(link.dataset.page) }) };
+function topicHTML(t) {
+    let isAdmin = currentUser && currentUser.role === 'admin';
+    let canDelete = t.owner === 'demo' || t.canDelete || isAdmin;
+
+    let headAuthorHTML = '';
+    let authorBadgeHTML = '';
+    if (isAdmin && t.authorName) {
+        headAuthorHTML = `
+            <div class="anon-avatar" style="background:#e8f5ed;color:#1d7959;font-weight:800;font-size:15px">${esc(t.authorName.charAt(0).toUpperCase())}</div>
+            <div>
+                <div style="display:flex;align-items:center;gap:6px">
+                    <b style="color:var(--green)">${esc(t.authorName)}</b>
+                    <span class="role-tag" style="font-size:9px">${esc(t.authorRole || 'PENGGUNA')}</span>
+                    ${t.authorDetail ? `<span class="role-tag" style="font-size:9px;background:rgba(213,248,121,0.18);color:var(--lime)">${esc(t.authorDetail)}</span>` : ''}
+                </div>
+                <small>${esc(t.authorEmail || '')} · ${ago(t.time)}</small>
+            </div>
+            <span class="anon-tag" style="background:#eaf5ec;color:#1d7959;border:1px solid #74d4a6;font-weight:700">👁 Penulis: ${esc(t.authorName)}</span>
+        `;
+        authorBadgeHTML = `
+            <div style="margin:4px 0 10px;padding:7px 11px;background:rgba(116,212,166,0.1);border-left:3px solid var(--green);border-radius:6px;font-size:11px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+                <span>👤 <b>Pembuat Topik (Info Admin):</b> <strong>${esc(t.authorName)}</strong> · Peran: <b>${esc(t.authorRole || '-')}</b> ${t.authorDetail ? `· Kelas/Bidang: <b>${esc(t.authorDetail)}</b>` : ''}</span>
+                <span style="color:var(--muted);font-size:10px">${esc(t.authorEmail || '')}</span>
+            </div>
+        `;
+    } else {
+        headAuthorHTML = `
+            <div class="anon-avatar">◌</div>
+            <div><b>Warga sekolah</b><small>${ago(t.time)}</small></div>
+            <span class="anon-tag">● Anonim</span>
+        `;
+    }
+
+    return `<article class="topic">
+        <div class="topic-head">${headAuthorHTML}</div>
+        ${authorBadgeHTML}
+        <h4>${esc(t.title)}</h4>
+        <p>${esc(t.body)}</p>
+        ${t.imageName ? `
+            <div class="topic-attached-wrap" style="margin:10px 0">
+                <img class="topic-attached-img" src="/api/posts/${t.id}/image" alt="Lampiran gambar" data-preview-img="/api/posts/${t.id}/image" style="max-width:100%;max-height:360px;border-radius:10px;object-fit:cover;cursor:pointer;border:1px solid var(--line);display:block">
+            </div>
+        ` : ''}
+        <div class="topic-actions">
+            <button class="text-action ${t.liked ? 'liked' : ''}" data-like="${t.id}">♡ ${t.likes} Suka</button>
+            <button class="text-action" data-comments="${t.id}">▱ ${t.comments ? t.comments.length : 0} Komentar</button>
+            ${canDelete ? `<button class="text-action text-danger" data-delete-topic="${t.id}">Hapus</button>` : ''}
+        </div>
+        <div class="comment-box hidden" id="comments-${t.id}">
+            ${t.comments && t.comments.length ? t.comments.map(c => {
+                let commentAuthor = (isAdmin && c.authorName) ?
+                    `<b style="color:var(--green)">${esc(c.authorName)}</b> <span class="role-tag" style="font-size:8px;padding:2px 4px">${esc(c.authorRole || '')}${c.authorDetail ? ` · ${esc(c.authorDetail)}` : ''}</span>` :
+                    '<b>Anonim</b>';
+                return `<div class="comment-item">
+                    <span class="anon-avatar" style="width:26px;height:26px;font-size:13px;font-weight:700">${(isAdmin && c.authorName) ? esc(c.authorName.charAt(0).toUpperCase()) : '◌'}</span>
+                    <p>${commentAuthor} · ${ago(c.time || (c.createdAt ? new Date(c.createdAt + 'Z').getTime() : Date.now()))}<br>${esc(c.body)}</p>
+                </div>`;
+            }).join('') : '<div class="empty-state" style="padding:12px">Belum ada komentar.</div>'}
+            <div class="comment-input"><input id="comment-input-${t.id}" maxlength="500" placeholder="Tulis komentar..."><button data-send-comment="${t.id}">Kirim</button></div>
+        </div>
+    </article>`;
+}
+async function reloadPosts() {
+    let result = await api('/api/posts');
+    topics = result.posts.map(post => ({
+        ...post,
+        time: post.createdAt ? new Date(post.createdAt + 'Z').getTime() : Date.now(),
+        owner: (post.isOwner || (currentUser && currentUser.role === 'admin')) ? 'demo' : 'other',
+        canDelete: Boolean(post.canDelete || post.isOwner || (currentUser && currentUser.role === 'admin'))
+    }));
+}
+bindTopicEvents = function () {
+    if ($('#topicImageInput')) {
+        $('#topicImageInput').onchange = () => {
+            let f = $('#topicImageInput').files[0];
+            if (f) {
+                $('#topicImageName').textContent = f.name;
+                $('#topicImageBadge').classList.remove('hidden');
+            } else {
+                $('#topicImageBadge').classList.add('hidden');
+            }
+        };
+    }
+    if ($('#topicImageRemove')) {
+        $('#topicImageRemove').onclick = () => {
+            if ($('#topicImageInput')) $('#topicImageInput').value = '';
+            $('#topicImageBadge').classList.add('hidden');
+        };
+    }
+    if ($('#topicForm')) {
+        $('#topicForm').onsubmit = async event => {
+            event.preventDefault();
+            let submitBtn = $('#publishTopicBtn');
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Memublikasikan...';
+            }
+            try {
+                let formData = new FormData();
+                formData.append('title', $('#topicTitle').value.trim());
+                formData.append('body', $('#topicBody').value.trim());
+                let imgFile = $('#topicImageInput')?.files[0];
+                if (imgFile) formData.append('image', imgFile);
+
+                await api('/api/posts', { method: 'POST', body: formData });
+                if ($('#topicImageInput')) $('#topicImageInput').value = '';
+                $('#topicImageBadge')?.classList.add('hidden');
+                $('#topicTitle').value = '';
+                $('#topicBody').value = '';
+                await reloadPosts();
+                renderHome();
+                toast('Topik diskusi berhasil dibagikan.');
+            } catch (error) {
+                toast(error.message);
+                if (submitBtn) {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Publikasikan ↗';
+                }
+            }
+        };
+    }
+    $$('[data-like]').forEach(button => button.onclick = async () => {
+        try {
+            await api(`/api/posts/${button.dataset.like}/like`, { method: 'POST', body: '{}' });
+            await reloadPosts();
+            renderHome();
+        } catch (error) {
+            toast(error.message);
+        }
+    });
+    $$('[data-comments]').forEach(button => button.onclick = () => $('#comments-' + button.dataset.comments).classList.toggle('hidden'));
+    $$('[data-send-comment]').forEach(button => button.onclick = async () => {
+        let postId = button.dataset.sendComment, input = $('#comment-input-' + postId);
+        try {
+            await api(`/api/posts/${postId}/comments`, { method: 'POST', body: JSON.stringify({ body: input.value.trim() }) });
+            await reloadPosts();
+            renderHome();
+            $('#comments-' + postId)?.classList.remove('hidden');
+        } catch (error) {
+            toast(error.message);
+        }
+    });
+    $$('[data-delete-topic]').forEach(button => button.onclick = async () => {
+        if (!confirm('Apakah Anda yakin ingin menghapus topik ini?')) return;
+        try {
+            await api(`/api/posts/${button.dataset.deleteTopic}`, { method: 'DELETE' });
+            await reloadPosts();
+            renderHome();
+            toast('Topik berhasil dihapus.');
+        } catch (error) {
+            toast(error.message);
+        }
+    });
+    $$('[data-preview-img]').forEach(img => img.onclick = () => {
+        let lightbox = $('#mediaLightboxDialog');
+        let lightboxImg = $('#mediaLightboxImg');
+        if (lightbox && lightboxImg) {
+            lightboxImg.src = img.dataset.previewImg || img.src;
+            lightbox.showModal();
+        }
+    });
+    let closeLightbox = $('#closeMediaLightbox');
+    if (closeLightbox) closeLightbox.onclick = () => $('#mediaLightboxDialog').close();
+    $$('[data-page]').forEach(link => link.onclick = event => { event.preventDefault(); goPage(link.dataset.page) });
+};
 function mapAssignment(task) {
     let isSubmitted = Boolean(task.submissionId);
     let isPastDue = new Date(task.due) < new Date();
@@ -104,22 +517,315 @@ function mapAssignment(task) {
         fileOriginalName: task.fileOriginalName || null,
         feedback: task.feedback || null,
         answerText: task.answerText || null,
+        attachmentName: task.attachmentName || null,
+        attachmentOriginalName: task.attachmentOriginalName || null,
         submissionCount: Number(task.submissionCount) || 0
     };
 }
 setupApp = async function () { let role = currentUser.role; $('#topUser').textContent = currentUser.name; $('#topRole').textContent = role === 'siswa' ? 'Siswa' : role === 'guru' ? 'Guru' : role === 'staf' ? 'Staf' : 'Admin sekolah'; $('#today').textContent = new Date().toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' }); renderNav(); goPage('beranda'); updateNotificationBadge(); try { let [postData, taskData, settingsData] = await Promise.all([api('/api/posts'), api('/api/assignments'), api('/api/attendance/settings')]); topics = postData.posts.map(post => ({ ...post, time: post.createdAt ? new Date(post.createdAt).getTime() : Date.now(), owner: (post.isOwner || (currentUser && currentUser.role === 'admin')) ? 'demo' : 'other', canDelete: Boolean(post.canDelete || post.isOwner || (currentUser && currentUser.role === 'admin')) })); if (taskData.availableClasses) window.availableClasses = taskData.availableClasses; tasks = (taskData.assignments || []).map(mapAssignment); schoolSettings = { ...schoolSettings, latitude: String(settingsData.settings.latitude), longitude: String(settingsData.settings.longitude), radius: settingsData.settings.radiusMeters, open: settingsData.settings.openTime, late: settingsData.settings.lateAfter, close: settingsData.settings.closeTime }; renderNav(); if (currentPage === 'beranda') renderHome() } catch (error) { toast('Sebagian data belum dapat dimuat: ' + error.message) } };
-addTaskForm = function () { if ($('#taskCreateForm')) return; let classOptions = (window.availableClasses && window.availableClasses.length ? window.availableClasses : ['Semua Kelas', 'XII RPL 1', 'XII RPL 2', 'XI RPL 1', 'XI RPL 2', 'X RPL 1', 'X RPL 2']); $('#pageContent').insertAdjacentHTML('beforeend', `<section class="card task-create-panel"><div class="card-title"><h3>Buat tugas untuk kelas</h3><button class="text-action" id="cancelTaskCreate">Batal</button></div><form id="taskCreateForm" class="grid two-col"><div><label class="field-label">Kategori tugas</label><select id="newCategory" class="field" required><option value="Teori">Teori</option><option value="Bengkel">Bengkel</option></select><label class="field-label">Kelas tujuan</label><input id="newClass" class="field" required list="classList" placeholder="Pilih atau ketik kelas (misal: XII RPL atau Semua Kelas)" maxlength="60"><datalist id="classList">${classOptions.map(c => `<option value="${esc(c)}"></option>`).join('')}</datalist><label class="field-label">Mata pelajaran</label><input id="newSubject" class="field" required value="${esc(currentUser.detail && currentUser.role === 'guru' ? currentUser.detail : '')}" placeholder="Contoh: Matematika" maxlength="80"></div><div><label class="field-label">Judul tugas</label><input id="newTitle" class="field" required maxlength="150" placeholder="Judul tugas..."><label class="field-label">Tenggat</label><input id="newDue" class="field" type="datetime-local" required><label class="field-label">Instruksi</label><textarea id="newDesc" class="field" rows="3" required maxlength="5000" placeholder="Petunjuk pengerjaan tugas..."></textarea></div><button class="btn btn-primary" type="submit">Simpan &amp; Publikasikan tugas ↗</button></form></section>`); $('#cancelTaskCreate').onclick = () => $('#taskCreateForm').closest('.task-create-panel').remove(); $('#taskCreateForm').onsubmit = async event => { event.preventDefault(); try { await api('/api/assignments', { method: 'POST', body: JSON.stringify({ title: $('#newTitle').value.trim(), instructions: $('#newDesc').value.trim(), subject: $('#newSubject').value.trim(), className: $('#newClass').value.trim(), category: $('#newCategory').value, dueAt: new Date($('#newDue').value).toISOString(), maxScore: 100 }) }); let result = await api('/api/assignments'); if (result.availableClasses) window.availableClasses = result.availableClasses; tasks = (result.assignments || []).map(mapAssignment); renderTasks(); toast('Tugas berhasil disimpan dan dikirim ke ' + $('#newClass').value.trim() + '!') } catch (error) { toast(error.message) } } };
-renderAccountRows = function (accounts) { return accounts.map((account, index) => `<tr><td><b>${esc(account.name)}</b></td><td>${esc(account.email)}</td><td>${esc(account.role)}</td><td>${esc(account.identityNumber)}</td><td>${esc(account.detail)}</td><td><span class="status ${account.status === 'AKTIF' ? 'status-selesai' : 'status-belum'}">${esc(account.status)}</span></td><td>${account.role !== 'ADMIN' ? `<button class="text-action" data-account-status="${index}">${account.status === 'AKTIF' ? 'Nonaktifkan' : 'Aktifkan'}</button><button class="text-action text-danger" style="font-weight:700" data-account-delete="${account.id}" data-account-name="${esc(account.name)}">🗑 Hapus</button>` : '<span class="muted">—</span>'}</td></tr>`).join('') };
-renderAdminAccounts = async function () { try { let result = await api('/api/admin/accounts'); adminAccounts = result.accounts; $('#pageContent').innerHTML = heading('ADMINISTRASI', 'Pengelolaan akun', `${adminAccounts.length} akun di database sekolah.`) + `<section class="card"><div class="card-title"><h3>Akun warga sekolah</h3><input id="accountSearch" class="field compact-input" placeholder="Cari nama atau email"></div><div class="table-wrap"><table><thead><tr><th>Nama</th><th>Email</th><th>Peran</th><th>NIS / NIP</th><th>Kelas / bidang</th><th>Status</th><th>Aksi</th></tr></thead><tbody id="accountRows">${renderAccountRows(adminAccounts)}</tbody></table></div></section>`; let bind = () => { $$('[data-account-status]').forEach(button => button.onclick = async () => { let account = adminAccounts[Number(button.dataset.accountStatus)]; try { await api(`/api/admin/accounts/${account.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: account.status === 'AKTIF' ? 'NONAKTIF' : 'AKTIF' }) }); renderAdminAccounts() } catch (error) { toast(error.message) } }); $$('[data-account-delete]').forEach(button => button.onclick = async () => { let id = button.dataset.accountDelete; let name = button.dataset.accountName; if (!confirm(`Hapus warga sekolah "${name}"? Seluruh data yang terkait akan dihapus secara permanen.`)) return; try { await api(`/api/admin/accounts/${id}`, { method: 'DELETE' }); toast(`Warga sekolah "${name}" berhasil dihapus.`); renderAdminAccounts() } catch (error) { toast(error.message) } }) }; $('#accountSearch').oninput = () => { let q = $('#accountSearch').value.toLowerCase(); $('#accountRows').innerHTML = renderAccountRows(adminAccounts.filter(account => (account.name + ' ' + account.email + ' ' + account.identityNumber).toLowerCase().includes(q))); bind() }; bind() } catch (error) { $('#pageContent').innerHTML = heading('ADMINISTRASI', 'Pengelolaan akun', error.message) } };
-updateNotificationBadge = async function () { try { let result = await api('/api/notifications'), unread = result.notifications.filter(notification => !notification.isRead).length; $('#notificationBtn').classList.toggle('has-unread', unread > 0); $('#notificationBtn').setAttribute('aria-label', unread ? `${unread} notifikasi belum dibaca` : 'Buka notifikasi') } catch (error) { $('#notificationBtn').classList.remove('has-unread') } };
-renderNotifications = async function () { try { let result = await api('/api/notifications'), items = result.notifications; $('#pageContent').innerHTML = heading('PEMBARUAN', 'Notifikasi', `${items.filter(item => !item.isRead).length} belum dibaca.`, '<button class="btn btn-outline" id="readAllNotifications">Tandai semua dibaca</button>') + `<section class="notification-list">${items.map(item => `<article class="notification-item ${item.isRead ? '' : 'unread'}"><span class="notification-mark">✳</span><div><b>${esc(item.title)}</b><p>${esc(item.message)}</p><small>${new Date(item.createdAt + 'Z').toLocaleString('id-ID')}</small></div>${item.isRead ? '' : '<button class="text-action" data-notification-read="${item.id}">Tandai dibaca</button>'}</article>`).join('') || '<div class="empty-state">Belum ada notifikasi.</div>'}</section>`; $('#readAllNotifications').onclick = async () => { try { await api('/api/notifications/read-all', { method: 'PATCH', body: '{}' }); renderNotifications(); updateNotificationBadge() } catch (error) { toast(error.message) } }; $$('[data-notification-read]').forEach(button => button.onclick = async () => { try { await api(`/api/notifications/${button.dataset.notificationRead}/read`, { method: 'PATCH', body: '{}' }); renderNotifications(); updateNotificationBadge() } catch (error) { toast(error.message) } }) } catch (error) { $('#pageContent').innerHTML = heading('PEMBARUAN', 'Notifikasi', error.message) } };
-renderAttendanceSettings = async function () { let settings; try { settings = (await api('/api/attendance/settings')).settings } catch (error) { return toast(error.message) } $('#pageContent').innerHTML = heading('PENGATURAN SEKOLAH', 'Aturan kehadiran', 'Perubahan disimpan di database server.') + `<form id="attendanceSettingsForm" class="card settings-form"><div class="settings-grid"><label>Koordinat lintang<input class="field" id="settingLatitude" type="number" step="0.000001" value="${settings.latitude}" required></label><label>Koordinat bujur<input class="field" id="settingLongitude" type="number" step="0.000001" value="${settings.longitude}" required></label><label>Radius (meter)<input class="field" id="settingRadius" type="number" min="30" max="500" value="${settings.radiusMeters}" required></label><label>Jam mulai<input class="field" id="settingOpen" type="time" value="${settings.openTime}" required></label><label>Jam tutup<input class="field" id="settingClose" type="time" value="${settings.closeTime}" required></label><label>Batas terlambat<input class="field" id="settingLate" type="time" value="${settings.lateAfter}" required></label></div><button class="btn btn-primary" type="submit">Simpan pengaturan</button></form>`; $('#attendanceSettingsForm').onsubmit = async event => { event.preventDefault(); try { await api('/api/admin/attendance/settings', { method: 'PUT', body: JSON.stringify({ latitude: Number($('#settingLatitude').value), longitude: Number($('#settingLongitude').value), radiusMeters: Number($('#settingRadius').value), openTime: $('#settingOpen').value, closeTime: $('#settingClose').value, lateAfter: $('#settingLate').value }) }); toast('Pengaturan tersimpan.') } catch (error) { toast(error.message) } } };
-renderAttendance = function () { if (currentUser.role !== 'admin') return renderUserAttendance(); $('#pageContent').innerHTML = heading('PENGELOLAAN SEKOLAH', 'Verifikasi foto kehadiran', 'Tinjau pengajuan foto yang disimpan di server sekolah.') + `<section class="card"><div class="card-title"><h3>Pengajuan kehadiran</h3><button class="btn btn-outline" id="reloadAttendance">Muat ulang</button></div><div id="adminAttendanceRows">Memuat data...</div></section>`; let load = async () => { try { let result = await api('/api/admin/attendance'); $('#adminAttendanceRows').innerHTML = result.attendance.map(row => `<article class="admin-attendance-row"><img src="/api/attendance/${encodeURIComponent(row.id)}/photo" alt="Foto kehadiran ${esc(row.name)}"><div><b>${esc(row.name)}</b><small>${esc(row.role)} · ${new Date(row.capturedAt).toLocaleString('id-ID')} · ${esc(row.day)}</small><span class="status ${row.verification === 'DISETUJUI' ? 'status-selesai' : 'status-belum'}">${esc(row.verification)}</span></div><div>${row.verification === 'MENUNGGU' ? `<button class="btn btn-primary" data-review-att="${row.id}" data-verification="DISETUJUI">Setujui</button><button class="btn btn-outline" data-review-att="${row.id}" data-verification="DITOLAK">Tolak</button>` : ''}</div></article>`).join('') || '<div class="empty-state">Belum ada pengajuan.</div>'; $$('[data-review-att]').forEach(button => button.onclick = async () => { try { await api(`/api/admin/attendance/${button.dataset.reviewAtt}`, { method: 'PATCH', body: JSON.stringify({ verification: button.dataset.verification }) }); load() } catch (error) { toast(error.message) } }) } catch (error) { $('#adminAttendanceRows').textContent = error.message } }; $('#reloadAttendance').onclick = load; load() };
-function renderHome() {
-    let action = currentUser.role === 'guru' ? '<button class="btn btn-primary" data-page="tugas">＋ Tambah tugas</button>' : ''; $('#pageContent').innerHTML = heading('KOMUNITAS SEKOLAH', 'Halo, ' + esc(currentUser.name.split(' ')[0]) + '! 👋', 'Apa yang sedang terjadi di sekolah hari ini?', action) + `<div class="grid three-col" style="margin-bottom:18px">${stat('▤', topics.length, 'Topik dibagikan', 'Komunitas')}${stat('♡', topics.reduce((a, t) => a + t.likes, 0), 'Suka dari warga', 'Aktif')}${stat('✳', '100%', 'Ruang anonim', 'Privasi')}</div><div class="grid two-col"><section><div class="hero-card"><div class="eyebrow">KOMUNITAS YANG PEDULI</div><h2>Satu cerita kecil bisa membawa perubahan besar.</h2><p>Bagikan informasi, ide, atau hal yang perlu diperhatikan di lingkungan sekolah.</p><button class="btn" id="scrollToTopicForm">＋ Tulis topik</button></div><div class="card" id="topicFormCard" style="margin-top:18px"><div class="card-title"><h3>Bagikan sesuatu</h3><small>Anonim untuk semua</small></div><form id="topicForm"><input id="topicTitle" class="field" maxlength="120" placeholder="Judul topik..." required><textarea id="topicBody" class="field" maxlength="500" rows="3" placeholder="Ceritakan informasi atau ide kamu..." required style="margin-top:9px;resize:vertical"></textarea><div class="compose-foot"><span class="hint">Maks. 500 karakter untuk isi</span><button class="btn btn-primary" type="submit">Publikasikan ↗</button></div></form></div><div class="card" style="margin-top:18px"><div class="card-title"><h3>Topik terbaru</h3><small>${topics.length} diskusi</small></div><div id="topicFeed">${[...topics].sort((a, b) => b.time - a.time).map(topicHTML).join('') || '<div class="empty-state"><div class="empty-icon">✳</div><b>Belum ada topik</b>Mulai dengan menulis topik pertama.</div>'}</div></div></section><aside class="grid" style="align-content:start"><div class="card"><div class="card-title"><h3>Agenda & pengingat</h3><small>SEKITAR KAMU</small></div><div class="mini-list"><div class="mini-item"><div class="mini-icon">▦</div><div><b>Tenggat tugas terdekat</b><small>${tasks.filter(t => t.status !== 'Selesai').length} tugas menunggu diselesaikan</small></div></div><div class="mini-item"><div class="mini-icon">◷</div><div><b>Periksa jadwal sekolah</b><small>Pantau informasi terbaru dari guru</small></div></div><div class="mini-item"><div class="mini-icon">✳</div><div><b>Jaga ruang tetap nyaman</b><small>Laporkan ancaman atau perundungan</small></div></div></div></div><div class="side-note"><h4>🛡 Privasi adalah prioritas</h4><p>Nama penulis dan pemberi komentar tidak ditampilkan. Identitas hanya dapat dibuka admin melalui laporan yang diverifikasi dan seluruh prosesnya dicatat.</p></div><div class="card"><div class="card-title"><h3>Menu cepat</h3></div><div class="mini-list"><div class="mini-item"><div class="mini-icon">⌕</div><div><b><a href="#" data-page="cari" style="color:inherit;text-decoration:none">Cari warga sekolah</a></b><small>Temukan profil siswa dan guru</small></div></div><div class="mini-item"><div class="mini-icon">▤</div><div><b><a href="#" data-page="tugas" style="color:inherit;text-decoration:none">Lihat tugas</a></b><small>Cek status dan tenggat</small></div></div></div></div></aside></div>`;
-    $('#scrollToTopicForm').onclick = () => { let card = $('#topicFormCard'); if (card) { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); setTimeout(() => $('#topicTitle').focus(), 400) } }; $('#topicForm').onsubmit = e => { e.preventDefault(); let title = $('#topicTitle').value.trim(), body = $('#topicBody').value.trim(); if (!title || !body) return; topics.unshift({ id: Date.now(), title, body, time: Date.now(), likes: 0, liked: false, comments: [], owner: 'demo' }); persist(); renderHome(); toast('Topik berhasil dipublikasikan secara anonim.') }; bindTopicEvents()
+addTaskForm = function () {
+    if ($('#taskCreateForm')) return;
+    let classOptions = (window.availableClasses && window.availableClasses.length ? window.availableClasses : ['Semua Kelas', 'XII RPL 1', 'XII RPL 2', 'XI RPL 1', 'XI RPL 2', 'X RPL 1', 'X RPL 2']);
+    $('#pageContent').insertAdjacentHTML('beforeend', `
+        <section class="card task-create-panel" style="margin-top:20px">
+            <div class="card-title">
+                <h3>Buat tugas untuk kelas</h3>
+                <button class="text-action" id="cancelTaskCreate">Batal</button>
+            </div>
+            <form id="taskCreateForm" class="grid two-col">
+                <div>
+                    <label class="field-label">Kategori tugas</label>
+                    <select id="newCategory" class="field" required>
+                        <option value="Teori">Teori</option>
+                        <option value="Bengkel">Bengkel</option>
+                    </select>
+                    <label class="field-label">Kelas tujuan</label>
+                    <select id="newClass" class="field" required>
+                        ${classOptions.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+                    </select>
+                    <label class="field-label">Mata pelajaran</label>
+                    <input id="newSubject" class="field" required value="${esc(currentUser.detail && currentUser.role === 'guru' ? currentUser.detail : '')}" placeholder="Contoh: Pemrograman Web" maxlength="80">
+                    <label class="field-label">Lampirkan Berkas / Soal (Opsional - PDF, DOCX, ZIP, Gambar maks 25MB)</label>
+                    <input id="newAttachment" type="file" class="field" style="padding:8px">
+                </div>
+                <div>
+                    <label class="field-label">Judul tugas</label>
+                    <input id="newTitle" class="field" required maxlength="150" placeholder="Judul tugas...">
+                    <label class="field-label">Tenggat</label>
+                    <input id="newDue" class="field" type="datetime-local" required>
+                    <label class="field-label">Instruksi</label>
+                    <textarea id="newDesc" class="field" rows="4" required maxlength="5000" placeholder="Petunjuk pengerjaan tugas..."></textarea>
+                </div>
+                <div style="grid-column:1/-1;margin-top:10px">
+                    <button class="btn btn-primary" id="saveTaskBtn" type="submit">Simpan &amp; Publikasikan tugas ↗</button>
+                </div>
+            </form>
+        </section>
+    `);
+    $('#cancelTaskCreate').onclick = () => $('#taskCreateForm').closest('.task-create-panel').remove();
+    $('#taskCreateForm').onsubmit = async event => {
+        event.preventDefault();
+        let submitBtn = $('#saveTaskBtn');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Menyimpan tugas...';
+        try {
+            let formData = new FormData();
+            formData.append('title', $('#newTitle').value.trim());
+            formData.append('instructions', $('#newDesc').value.trim());
+            formData.append('subject', $('#newSubject').value.trim());
+            formData.append('className', $('#newClass').value.trim());
+            formData.append('category', $('#newCategory').value);
+            formData.append('dueAt', new Date($('#newDue').value).toISOString());
+            formData.append('maxScore', 100);
+            let attFile = $('#newAttachment').files[0];
+            if (attFile) formData.append('attachment', attFile);
+
+            await api('/api/assignments', { method: 'POST', body: formData });
+            let result = await api('/api/assignments');
+            if (result.availableClasses) window.availableClasses = result.availableClasses;
+            tasks = (result.assignments || []).map(mapAssignment);
+            renderTasks();
+            toast('Tugas berhasil disimpan dan dikirim ke ' + $('#newClass').value.trim() + '!');
+        } catch (error) {
+            toast(error.message);
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Simpan & Publikasikan tugas ↗';
+        }
+    };
+};
+
+renderAttendance = function () {
+    if (currentUser.role !== 'admin') return renderUserAttendance();
+    $('#pageContent').innerHTML = heading('PENGELOLAAN SEKOLAH', 'Foto Kehadiran Siswa', 'Tinjau absensi dan foto wajah siswa yang telah diverifikasi otomatis oleh sistem pengenalan wajah.') +
+    `<section class="card">
+        <div class="card-title">
+            <h3>Daftar Kehadiran Siswa (Verifikasi Otomatis Sistem)</h3>
+            <button class="btn btn-outline" id="reloadAttendance">Muat ulang</button>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Foto Wajah</th>
+                        <th>Nama Siswa</th>
+                        <th>Kelas</th>
+                        <th>Waktu & Tanggal</th>
+                        <th>Status</th>
+                        <th>Kontrol Admin</th>
+                    </tr>
+                </thead>
+                <tbody id="adminAttendanceRows">
+                    <tr><td colspan="6" style="text-align:center">Memuat data absensi...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>`;
+
+    let load = async () => {
+        try {
+            let result = await api('/api/admin/attendance');
+            let rows = result.attendance || [];
+            $('#adminAttendanceRows').innerHTML = rows.map(row => `
+                <tr>
+                    <td>
+                        <img src="/api/attendance/${encodeURIComponent(row.id)}/photo" class="attendance-thumb" alt="Foto wajah ${esc(row.name)}" data-preview-img="/api/attendance/${encodeURIComponent(row.id)}/photo">
+                    </td>
+                    <td><b>${esc(row.name)}</b><br><small class="muted">${esc(row.email || '')}</small></td>
+                    <td><span class="role-tag">${esc(row.detail || '-')}</span></td>
+                    <td>${new Date(row.capturedAt).toLocaleString('id-ID')}<br><small class="muted">${esc(row.day)}</small></td>
+                    <td><span class="status ${row.verification === 'DISETUJUI' ? 'status-selesai' : (row.verification === 'DITOLAK' ? 'status-terlambat' : 'status-belum')}">${row.verification === 'DISETUJUI' ? '✓ Terverifikasi Sistem' : esc(row.verification)}</span></td>
+                    <td>
+                        <div style="display:flex;gap:6px">
+                            ${row.verification === 'DISETUJUI' ? `
+                                <button class="btn btn-outline" style="padding:5px 9px;font-size:11px" data-review-att="${row.id}" data-verification="DITOLAK">Tandai Tidak Sah</button>
+                            ` : `
+                                <button class="btn btn-primary" style="padding:5px 9px;font-size:11px" data-review-att="${row.id}" data-verification="DISETUJUI">✓ Pulihkan Status Sah</button>
+                            `}
+                        </div>
+                    </td>
+                </tr>
+            `).join('') || '<tr><td colspan="6" class="empty-state">Belum ada pengajuan absensi hari ini.</td></tr>';
+
+            $$('[data-review-att]').forEach(button => button.onclick = async () => {
+                try {
+                    await api(`/api/admin/attendance/${button.dataset.reviewAtt}`, {
+                        method: 'PATCH',
+                        body: JSON.stringify({ verification: button.dataset.verification })
+                    });
+                    toast(`Kehadiran telah ${button.dataset.verification.toLowerCase()}.`);
+                    load();
+                } catch (error) {
+                    toast(error.message);
+                }
+            });
+
+            $$('[data-preview-img]').forEach(img => img.onclick = () => {
+                let lightbox = $('#mediaLightboxDialog');
+                let lightboxImg = $('#mediaLightboxImg');
+                if (lightbox && lightboxImg) {
+                    lightboxImg.src = img.dataset.previewImg || img.src;
+                    lightbox.showModal();
+                }
+            });
+        } catch (error) {
+            $('#adminAttendanceRows').innerHTML = `<tr><td colspan="6" class="error">${esc(error.message)}</td></tr>`;
+        }
+    };
+
+    $('#reloadAttendance').onclick = load;
+    load();
+};
+
+async function renderAdminClasses() {
+    if (currentUser.role !== 'admin') return goPage('beranda');
+    $('#pageContent').innerHTML = heading('ADMINISTRASI', 'Pengelolaan Data Kelas', 'Atur data kelas sistem untuk meminimalisir typo pendaftaran dan penugasan.') +
+    `<div class="grid two-col">
+        <section class="card">
+            <div class="card-title"><h3>Daftar Kelas di Sistem</h3><small id="classCount">Memuat...</small></div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>No</th><th>Nama Kelas</th><th>Aksi</th></tr></thead>
+                    <tbody id="adminClassRows"><tr><td colspan="3">Memuat kelas...</td></tr></tbody>
+                </table>
+            </div>
+        </section>
+        <section class="card" style="align-self:start">
+            <div class="card-title"><h3>Tambah Kelas Baru</h3><small>VALIDASI SISTEM</small></div>
+            <form id="addClassForm" style="display:flex;flex-direction:column;gap:12px">
+                <label class="field-label" style="margin:0">Nama Kelas</label>
+                <input id="newClassNameInput" class="field" placeholder="Contoh: XII RPL 3, X MM 1" required maxlength="60">
+                <p class="hint">Gunakan format standar (Tingkat Jurusan Nomor) agar konsisten dan meminimalisir kesalahan penulisan.</p>
+                <button class="btn btn-primary" type="submit">＋ Tambah Kelas</button>
+            </form>
+        </section>
+    </div>`;
+
+    const loadClasses = async () => {
+        try {
+            let res = await api('/api/classes');
+            let list = res.classes || [];
+            $('#classCount').textContent = `${list.length} KELAS`;
+            window.availableClasses = ['Semua Kelas', ...list.map(c => c.name)];
+            $('#adminClassRows').innerHTML = list.map((c, i) => `
+                <tr>
+                    <td>${i + 1}</td>
+                    <td><b>${esc(c.name)}</b></td>
+                    <td>
+                        <button class="text-action text-danger" data-delete-class="${c.id}" data-class-name="${esc(c.name)}">🗑 Hapus</button>
+                    </td>
+                </tr>
+            `).join('') || '<tr><td colspan="3" class="empty-state">Belum ada kelas.</td></tr>';
+
+            $$('[data-delete-class]').forEach(btn => btn.onclick = async () => {
+                let id = btn.dataset.deleteClass;
+                let name = btn.dataset.className;
+                if (!confirm(`Hapus kelas "${name}" dari sistem?`)) return;
+                try {
+                    await api(`/api/classes/${id}`, { method: 'DELETE' });
+                    toast(`Kelas "${name}" berhasil dihapus.`);
+                    loadClasses();
+                    populateRegisterClasses();
+                } catch (err) {
+                    toast(err.message);
+                }
+            });
+        } catch (err) {
+            $('#adminClassRows').innerHTML = `<tr><td colspan="3" class="error">${esc(err.message)}</td></tr>`;
+        }
+    };
+
+    $('#addClassForm').onsubmit = async e => {
+        e.preventDefault();
+        let name = $('#newClassNameInput').value.trim();
+        if (!name) return;
+        try {
+            await api('/api/classes', { method: 'POST', body: JSON.stringify({ name }) });
+            $('#newClassNameInput').value = '';
+            toast(`Kelas "${name}" berhasil ditambahkan.`);
+            loadClasses();
+            populateRegisterClasses();
+        } catch (err) {
+            toast(err.message);
+        }
+    };
+
+    loadClasses();
 }
-function bindTopicEvents() { $$('[data-like]').forEach(b => b.onclick = () => { let t = topics.find(t => t.id == b.dataset.like); if (t) { t.liked = !t.liked; t.likes += t.liked ? 1 : -1; persist(); renderHome() } }); $$('[data-comments]').forEach(b => b.onclick = () => $('#comments-' + b.dataset.comments).classList.toggle('hidden')); $$('[data-send-comment]').forEach(b => b.onclick = () => { let t = topics.find(t => t.id == b.dataset.sendComment), input = $('#comment-input-' + b.dataset.sendComment), body = input.value.trim(); if (!body) return toast('Komentar tidak boleh kosong.'); t.comments.push({ id: Date.now(), body, time: Date.now() }); persist(); renderHome(); $('#comments-' + t.id).classList.remove('hidden'); toast('Komentar terkirim secara anonim.') }); $$('[data-delete-topic]').forEach(b => b.onclick = () => { topics = topics.filter(t => t.id != b.dataset.deleteTopic); persist(); renderHome(); toast('Topik milikmu dihapus.') }); $$('[data-page]').forEach(a => a.onclick = e => { e.preventDefault(); goPage(a.dataset.page) }) }
+
+function renderHome() {
+    let action = currentUser.role === 'guru' ? '<button class="btn btn-primary" data-page="tugas">＋ Tambah tugas</button>' : '';
+    $('#pageContent').innerHTML = heading('KOMUNITAS SEKOLAH', 'Halo, ' + esc(currentUser.name.split(' ')[0]) + '! 👋', 'Apa yang sedang terjadi di sekolah hari ini?', action) +
+    `<div class="grid three-col" style="margin-bottom:18px">
+        ${stat('▤', topics.length, 'Topik dibagikan', 'Komunitas')}
+        ${stat('♡', topics.reduce((a, t) => a + (t.likes || 0), 0), 'Suka dari warga', 'Aktif')}
+        ${stat('✳', '100%', 'Ruang anonim', 'Privasi')}
+    </div>
+    <div class="grid two-col">
+        <section>
+            <div class="hero-card">
+                <div class="eyebrow">KOMUNITAS YANG PEDULI</div>
+                <h2>Satu cerita kecil bisa membawa perubahan besar.</h2>
+                <p>Bagikan informasi, ide, atau hal yang perlu diperhatikan di lingkungan sekolah.</p>
+                <button class="btn" id="scrollToTopicForm">＋ Tulis topik</button>
+            </div>
+            <div class="card" id="topicFormCard" style="margin-top:18px">
+                <div class="card-title"><h3>Bagikan sesuatu</h3><small>Anonim untuk semua</small></div>
+                <form id="topicForm">
+                    <input id="topicTitle" class="field" maxlength="120" placeholder="Judul topik..." required>
+                    <textarea id="topicBody" class="field" maxlength="500" rows="3" placeholder="Ceritakan informasi atau ide kamu..." required style="margin-top:9px;resize:vertical"></textarea>
+                    <div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                        <label class="btn btn-outline" style="cursor:pointer;padding:7px 13px;font-size:11px;display:inline-flex;align-items:center;gap:6px">
+                            📷 Unggah Gambar
+                            <input type="file" id="topicImageInput" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none">
+                        </label>
+                        <div id="topicImageBadge" class="hidden" style="display:inline-flex;align-items:center;gap:8px;background:var(--surface-soft);padding:4px 10px;border-radius:8px;border:1px solid var(--line);font-size:11px">
+                            <span id="topicImageName"></span>
+                            <button type="button" id="topicImageRemove" class="text-action text-danger" style="font-weight:700">✕</button>
+                        </div>
+                    </div>
+                    <div class="compose-foot" style="margin-top:12px">
+                        <span class="hint">Maks. 500 karakter · Gambar opsional</span>
+                        <button class="btn btn-primary" id="publishTopicBtn" type="submit">Publikasikan ↗</button>
+                    </div>
+                </form>
+            </div>
+            <div class="card" style="margin-top:18px">
+                <div class="card-title"><h3>Topik terbaru</h3><small>${topics.length} diskusi</small></div>
+                <div id="topicFeed">${[...topics].sort((a, b) => b.time - a.time).map(topicHTML).join('') || '<div class="empty-state"><div class="empty-icon">✳</div><b>Belum ada topik</b>Mulai dengan menulis topik pertama.</div>'}</div>
+            </div>
+        </section>
+        <aside class="grid" style="align-content:start">
+            <div class="card">
+                <div class="card-title"><h3>Agenda & pengingat</h3><small>SEKITAR KAMU</small></div>
+                <div class="mini-list">
+                    <div class="mini-item"><div class="mini-icon">▦</div><div><b>Tenggat tugas terdekat</b><small>${tasks.filter(t => t.status !== 'Selesai').length} tugas menunggu diselesaikan</small></div></div>
+                    <div class="mini-item"><div class="mini-icon">◷</div><div><b>Periksa jadwal sekolah</b><small>Pantau informasi terbaru dari guru</small></div></div>
+                    <div class="mini-item"><div class="mini-icon">✳</div><div><b>Jaga ruang tetap nyaman</b><small>Laporkan ancaman atau perundungan</small></div></div>
+                </div>
+            </div>
+            <div class="side-note">
+                <h4>🛡 Privasi adalah prioritas</h4>
+                <p>Nama penulis dan pemberi komentar tidak ditampilkan. Identitas hanya dapat dibuka admin melalui laporan yang diverifikasi dan seluruh prosesnya dicatat.</p>
+            </div>
+            <div class="card">
+                <div class="card-title"><h3>Menu cepat</h3></div>
+                <div class="mini-list">
+                    <div class="mini-item"><div class="mini-icon">⌕</div><div><b><a href="#" data-page="cari" style="color:inherit;text-decoration:none">Cari warga sekolah</a></b><small>Temukan profil siswa dan guru</small></div></div>
+                    <div class="mini-item"><div class="mini-icon">▤</div><div><b><a href="#" data-page="tugas" style="color:inherit;text-decoration:none">Lihat tugas</a></b><small>Cek status dan tenggat</small></div></div>
+                </div>
+            </div>
+        </aside>
+    </div>`;
+
+    $('#scrollToTopicForm').onclick = () => {
+        let card = $('#topicFormCard');
+        if (card) {
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setTimeout(() => $('#topicTitle').focus(), 400);
+        }
+    };
+    bindTopicEvents();
+}
 function renderSearch() {
     let list = people.filter(p => (searchRole === 'Semua' || p.role === searchRole) && (p.name + ' ' + p.detail + ' ' + p.bio).toLowerCase().includes(searchQuery.toLowerCase())); $('#pageContent').innerHTML = heading('JELAJAHI SEKOLAH', 'Cari warga sekolah', 'Temukan siswa, guru, atau staf berdasarkan nama, kelas, atau pelajaran.') + `<div class="search-row"><input id="peopleSearch" class="search-field" value="${esc(searchQuery)}" placeholder="⌕  Cari nama, kelas, atau pelajaran..."><button class="btn btn-primary" id="searchReset">Reset</button></div><div class="filter-row">${['Semua', 'Siswa', 'Guru', 'Staf'].map(x => `<button class="filter-chip ${searchRole === x ? 'active' : ''}" data-person-filter="${x}">${x}</button>`).join('')}</div><div class="card-title"><h3>Hasil pencarian</h3><small>${list.length} profil ditemukan</small></div><div class="people-grid">${list.map((p, i) => `<article class="person-card"><div class="person-avatar">◌</div><span class="role-tag">${p.role.toUpperCase()}</span><h3>${esc(p.name)}</h3><p>${esc(p.detail)}</p><button class="btn btn-outline" data-person="${esc(p.name)}">Lihat profil ↗</button></article>`).join('') || '<div class="empty-state" style="grid-column:1/-1"><div class="empty-icon">⌕</div><b>Tidak ada yang cocok dengan pencarianmu.</b>Coba nama lain atau kelasnya.</div>'}</div>`;
     $('#peopleSearch').oninput = e => { searchQuery = e.target.value; let pos = e.target.selectionStart; renderSearch(); let input = $('#peopleSearch'); input.focus(); input.setSelectionRange(pos, pos) }; $('#searchReset').onclick = () => { searchQuery = ''; searchRole = 'Semua'; renderSearch() }; $$('[data-person-filter]').forEach(b => b.onclick = () => { searchRole = b.dataset.personFilter; renderSearch() }); $$('[data-person]').forEach(b => b.onclick = () => showPerson(b.dataset.person))
@@ -190,6 +896,12 @@ function renderTasks() {
                     ${isStudent && t.submissionId && t.feedback ? `
                         <div style="margin-top:10px;padding:8px 10px;background:rgba(29,121,89,0.12);border-left:3px solid #1d7959;border-radius:4px;font-size:12px">
                             <b>💬 Catatan Guru:</b> ${esc(t.feedback)}
+                        </div>
+                    ` : ''}
+                    ${t.attachmentName ? `
+                        <div style="margin-top:10px;padding:7px 10px;background:rgba(213,248,121,0.08);border:1px solid rgba(213,248,121,0.25);border-radius:6px;display:flex;align-items:center;justify-content:space-between;gap:6px">
+                            <span style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📎 <b>Lampiran Guru:</b> ${esc(t.attachmentOriginalName || 'Berkas Tugas')}</span>
+                            <a href="/api/assignments/${t.id}/attachment" download class="text-action" style="font-weight:700;text-decoration:underline;white-space:nowrap" target="_blank">Unduh ⬇</a>
                         </div>
                     ` : ''}
                 </div>
@@ -269,6 +981,13 @@ function openSubmitTaskModal(taskId) {
 
             <div style="background:var(--bg-subtle, rgba(255,255,255,0.03));padding:12px;border-radius:8px;border:1px solid var(--line);font-size:13px;white-space:pre-wrap"><b>Petunjuk Tugas:</b>\n${esc(t.desc || 'Tidak ada petunjuk tambahan.')}</div>
 
+            ${t.attachmentName ? `
+            <div style="background:rgba(213,248,121,0.08);border:1px solid rgba(213,248,121,0.25);padding:10px 14px;border-radius:8px;display:flex;justify-content:space-between;align-items:center;gap:10px">
+                <span style="font-size:13px">📎 <b>Lampiran Berkas dari Guru:</b> ${esc(t.attachmentOriginalName || 'Berkas Tugas')}</span>
+                <a href="/api/assignments/${t.id}/attachment" download class="btn btn-outline" style="padding:6px 12px;font-size:11px;text-decoration:none" target="_blank">Unduh File ⬇</a>
+            </div>
+            ` : ''}
+
             ${hasSubmission ? `
             <div style="background:rgba(29,121,89,0.1);border:1px solid rgba(29,121,89,0.3);padding:14px;border-radius:8px">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
@@ -293,7 +1012,7 @@ function openSubmitTaskModal(taskId) {
 
             <form id="submissionUploadForm" style="display:flex;flex-direction:column;gap:12px">
                 <label class="field-label" style="margin-bottom:-4px">
-                    ${hasSubmission ? 'Unggah File Pengganti / Revisi (Maks 15MB)' : 'Pilih File Tugas (PDF, Dokumen, Gambar, ZIP, dll - Maks 15MB)'}
+                    ${hasSubmission ? 'Unggah File Pengganti / Revisi (Maks 25MB)' : 'Pilih File Tugas (PDF, Dokumen, Gambar, ZIP, dll - Maks 25MB)'}
                 </label>
                 <input id="submitFile" type="file" class="field" ${hasSubmission ? '' : 'required'} style="padding:8px">
 

@@ -42,18 +42,23 @@
         <div id="registerView" class="hidden">
           <div class="auth-divider"><span>DETAIL AKUN</span></div>
           <form id="registerForm"><label for="registerName">Nama lengkap</label><input id="registerName" maxlength="120"
-              autocomplete="name" required><label for="registerEmail">Email</label><input id="registerEmail"
-              type="email" maxlength="120" autocomplete="email" required><label for="registerPassword">Kata
+              autocomplete="name" placeholder="Nama lengkap Anda" required><label for="registerEmail">Email</label><input id="registerEmail"
+              type="email" maxlength="120" autocomplete="email" placeholder="nama@sekolah.sch.id" required><label for="registerPassword">Kata
               sandi</label><input id="registerPassword" type="password" minlength="8" autocomplete="new-password"
-              required><label for="registerRole">Peran</label><select id="registerRole">
+              placeholder="Minimal 8 karakter (huruf & angka)" required><label for="registerRole">Peran</label><select id="registerRole">
               <option value="SISWA">Siswa</option>
               <option value="GURU">Guru</option>
               <option value="STAF">Staf</option>
             </select><label for="registerIdentity">NIS / NIP <small class="muted" style="font-size:11px">(Opsional)</small></label><input id="registerIdentity" maxlength="30"
-              placeholder="Nomor induk (opsional)"><label for="registerDetail" id="registerDetailLabel">Kelas</label><input id="registerDetail"
-              maxlength="80" placeholder="Contoh: XI RPL 1" required>
+              placeholder="Nomor induk (opsional)">
+            <div id="registerClassGroup">
+              <label for="registerDetail" id="registerDetailLabel">Kelas</label>
+              <select id="registerDetail" required>
+                <option value="">-- Memuat daftar kelas... --</option>
+              </select>
+            </div>
             <p id="registerError" class="error hidden"></p><button class="btn btn-primary full"
-              type="submit">Daftar</button><button class="btn btn-google full" id="googleRegister" type="button">Daftar
+              type="submit">Daftar Akun <span>↗</span></button><button class="btn btn-google full hidden" id="googleRegister" type="button">Daftar
               dengan Google</button>
           </form>
         </div>
@@ -81,18 +86,19 @@
         <div class="crumb"><span>Siglockedin</span><b>/</b><strong id="pageName">Beranda</strong></div>
         <div class="top-actions"><span class="date-chip" id="today"></span><button class="icon-btn" id="notificationBtn"
             title="Notifikasi" aria-label="Buka notifikasi">♧<i></i></button><button class="user-pill"
-            id="profileShortcut"><span class="avatar">◌</span><span><b id="topUser">Pengguna Demo</b><small
-                id="topRole">Siswa</small></span><span class="chevron">⌄</span></button></div>
+            id="profileShortcut"><span class="avatar">◌</span><span><b id="topUser">Pengguna</b><small
+                id="topRole">Siswa</small></span></button></div>
       </header>
       <div id="pageContent" class="content"></div>
       <footer>© 2026 Siglockedin <span>•</span> Tumbuh, belajar, saling mendukung.</footer>
     </main>
   </div>
+  <dialog id="mediaLightboxDialog" class="photo-dialog">
+    <button class="photo-close" id="closeMediaLightbox" aria-label="Tutup preview">×</button>
+    <img id="mediaLightboxImg" alt="Preview Gambar">
+  </dialog>
   <div id="toast" class="toast"></div>
   <script src="app.js"></script>
-  <script>
-    document.getElementById('registerRole').addEventListener('change', function () { var labels = { SISWA: 'Kelas', GURU: 'Mata pelajaran', STAF: 'Bidang tugas' }; var placeholders = { SISWA: 'Contoh: XI RPL 1', GURU: 'Contoh: Matematika', STAF: 'Contoh: Perpustakaan' }; document.getElementById('registerDetailLabel').textContent = labels[this.value] || 'Kelas / bidang'; document.getElementById('registerDetail').placeholder = placeholders[this.value] || '' });
-  </script>
   <script src="attendance-bridge.js"></script>
   <script src="search-bridge.js"></script>
   <script src="profile-bridge.js"></script>

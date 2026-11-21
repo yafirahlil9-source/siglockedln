@@ -1,13 +1,38 @@
+let searchClass = '';
+
 renderSearch = async function () {
+  let classesList = [];
+  try {
+    let cr = await api('/api/classes');
+    classesList = cr.classes || [];
+  } catch (e) {
+    classesList = [];
+  }
+
   $('#pageContent').innerHTML = heading(
     'JELAJAHI SEKOLAH',
     'Cari warga sekolah',
     'Cari akun aktif berdasarkan nama, kelas, atau bidang tugas.'
-  ) + `<div class="search-row"><input id="peopleSearch" class="search-field" value="${esc(searchQuery)}" placeholder="Cari nama, kelas, atau bidang..."><button class="btn btn-outline" id="searchReset">Reset</button></div><div class="filter-row">${['Semua','Siswa','Guru','Staf'].map(role => `<button class="filter-chip ${searchRole === role ? 'active' : ''}" data-db-role="${role}">${role}</button>`).join('')}</div><div class="card-title"><h3>Hasil pencarian</h3><small id="searchCount">Memuat akun...</small></div><div class="people-grid" id="peopleResults"></div>`;
+  ) + `<div class="search-row">
+    <input id="peopleSearch" class="search-field" value="${esc(searchQuery)}" placeholder="Cari nama, kelas, atau bidang...">
+    <select id="peopleClassFilter" class="field" style="width:auto;min-width:145px;padding:9px 12px;font-size:11px">
+      <option value="">Semua Kelas</option>
+      ${classesList.map(c => `<option value="${esc(c.name)}" ${searchClass === c.name ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+    </select>
+    <button class="btn btn-outline" id="searchReset">Reset</button>
+  </div>
+  <div class="filter-row">
+    ${['Semua','Siswa','Guru','Staf'].map(role => `<button class="filter-chip ${searchRole === role ? 'active' : ''}" data-db-role="${role}">${role}</button>`).join('')}
+  </div>
+  <div class="card-title"><h3>Hasil pencarian</h3><small id="searchCount">Memuat akun...</small></div>
+  <div class="people-grid" id="peopleResults"></div>`;
 
   const loadPeople = async () => {
     const query = $('#peopleSearch').value.trim();
+    const cls = $('#peopleClassFilter')?.value || searchClass || '';
     searchQuery = query;
+    searchClass = cls;
+
     if (query.length === 1) {
       $('#searchCount').textContent = 'Masukkan minimal 2 karakter';
       $('#peopleResults').innerHTML = '';
@@ -16,8 +41,9 @@ renderSearch = async function () {
 
     try {
       const role = searchRole === 'Semua' ? '' : searchRole.toUpperCase();
-      const result = await api(`/api/search?q=${encodeURIComponent(query)}&role=${encodeURIComponent(role)}`);
+      const result = await api(`/api/search?q=${encodeURIComponent(query)}&role=${encodeURIComponent(role)}&className=${encodeURIComponent(cls)}`);
       const isAdmin = currentUser && currentUser.role === 'admin';
+      $('#searchCount').textContent = `${result.people.length} akun ditemukan`;
       $('#peopleResults').innerHTML = result.people.map(person => {
         const canDelete = isAdmin && person.role !== 'ADMIN' && person.id !== currentUser.id;
         return `<article class="person-card">
@@ -89,9 +115,15 @@ renderSearch = async function () {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(loadPeople, 250);
   };
+  $('#peopleClassFilter').onchange = () => {
+    searchClass = $('#peopleClassFilter').value;
+    loadPeople();
+  };
   $('#searchReset').onclick = () => {
     searchRole = 'Semua';
+    searchClass = '';
     $('#peopleSearch').value = '';
+    if ($('#peopleClassFilter')) $('#peopleClassFilter').value = '';
     $$('[data-db-role]').forEach(button => button.classList.toggle('active', button.dataset.dbRole === 'Semua'));
     loadPeople();
   };

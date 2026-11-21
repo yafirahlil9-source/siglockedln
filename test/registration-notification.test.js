@@ -5,10 +5,31 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const BetterSqlite3 = require('better-sqlite3');
+const mysql = require('mysql2/promise');
 const { test } = require('node:test');
 
 const projectRoot = path.resolve(__dirname, '..');
+require('dotenv').config({ path: path.join(projectRoot, '.env') });
+
+const mysqlConfig = {
+  host: process.env.DB_HOST || 'localhost',
+  port: Number(process.env.DB_PORT || 3306),
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || ''
+};
+
+function uniqueDatabaseName() {
+  return `sekolah_hub_test_${crypto.randomBytes(12).toString('hex')}`;
+}
+
+async function dropDatabase(databaseName) {
+  const connection = await mysql.createConnection(mysqlConfig);
+  try {
+    await connection.query(`DROP DATABASE IF EXISTS \`${databaseName}\``);
+  } finally {
+    await connection.end();
+  }
+}
 
 async function findFreePort() {
   const server = http.createServer();
@@ -40,6 +61,7 @@ test('new registration creates an admin notification that can be read', { timeou
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'edusmart-notification-'));
+  const databaseName = uniqueDatabaseName();
   const adminEmail = 'admin@edusmart-test.example.com';
   const adminPassword = `Admin-${crypto.randomBytes(18).toString('hex')}-7A`;
   const studentEmail = `student-${crypto.randomUUID()}@edusmart-test.example.com`;
@@ -51,6 +73,7 @@ test('new registration creates an admin notification that can be read', { timeou
       PORT: String(port),
       APP_URL: baseUrl,
       DATA_DIR: dataDir,
+      DB_NAME: databaseName,
       SESSION_SECRET: crypto.randomBytes(40).toString('hex'),
       SEED_ADMIN_EMAIL: adminEmail,
       SEED_ADMIN_PASSWORD: adminPassword,
@@ -109,7 +132,11 @@ test('new registration creates an admin notification that can be read', { timeou
   } finally {
     child.kill();
     if (child.exitCode === null) await new Promise(resolve => child.once('exit', resolve));
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    try {
+      await dropDatabase(databaseName);
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
   }
 });
 
@@ -117,6 +144,7 @@ test('accounts auto-activate by default', { timeout: 30000 }, async () => {
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'edusmart-auto-activate-'));
+  const databaseName = uniqueDatabaseName();
   const adminEmail = 'admin-auto@edusmart-test.example.com';
   const adminPassword = `Admin-${crypto.randomBytes(18).toString('hex')}-7A`;
   const studentEmail = `student-${crypto.randomUUID()}@edusmart-test.example.com`;
@@ -128,6 +156,7 @@ test('accounts auto-activate by default', { timeout: 30000 }, async () => {
       PORT: String(port),
       APP_URL: baseUrl,
       DATA_DIR: dataDir,
+      DB_NAME: databaseName,
       SESSION_SECRET: crypto.randomBytes(40).toString('hex'),
       SEED_ADMIN_EMAIL: adminEmail,
       SEED_ADMIN_PASSWORD: adminPassword,
@@ -182,20 +211,25 @@ test('accounts auto-activate by default', { timeout: 30000 }, async () => {
       }
     });
     assert.equal(secondRegistration.response.status, 201);
-    const scoreDb = new BetterSqlite3(path.join(dataDir, 'edusmart.sqlite'));
-    const adminId = scoreDb.prepare('SELECT id FROM users WHERE email=?').get(adminEmail).id;
-    const secondStudentId = scoreDb.prepare('SELECT id FROM users WHERE email=?').get(secondStudentEmail).id;
+    const scoreDb = await mysql.createConnection({ ...mysqlConfig, database: databaseName });
+    const [[admin]] = await scoreDb.execute('SELECT id FROM users WHERE email=?', [adminEmail]);
+    const [[secondStudent]] = await scoreDb.execute('SELECT id FROM users WHERE email=?', [secondStudentEmail]);
+    assert.ok(admin);
+    assert.ok(secondStudent);
     const assignmentOne = crypto.randomUUID(), assignmentTwo = crypto.randomUUID();
     const dueAt = new Date(Date.now() + 86400000).toISOString();
-    const insertAssignment = scoreDb.prepare('INSERT INTO assignments (id,title,instructions,subject,class_name,due_at,max_score,created_by) VALUES (?,?,?,?,?,?,?,?)');
-    insertAssignment.run(assignmentOne, 'Tes Nilai Satu', 'Instruksi tes satu.', 'Matematika', 'X IPA 2', dueAt, 100, adminId);
-    insertAssignment.run(assignmentTwo, 'Tes Nilai Dua', 'Instruksi tes dua.', 'Matematika', 'X IPA 2', dueAt, 200, adminId);
-    const insertSubmission = scoreDb.prepare('INSERT INTO submissions (id,assignment_id,student_id,score) VALUES (?,?,?,?)');
-    insertSubmission.run(crypto.randomUUID(), assignmentOne, login.data.user.id, 80);
-    insertSubmission.run(crypto.randomUUID(), assignmentTwo, login.data.user.id, 160);
-    insertSubmission.run(crypto.randomUUID(), assignmentOne, secondStudentId, 90);
-    insertSubmission.run(crypto.randomUUID(), assignmentTwo, secondStudentId, 180);
-    scoreDb.close();
+    try {
+      const insertAssignment = 'INSERT INTO assignments (id,title,instructions,subject,class_name,due_at,max_score,created_by) VALUES (?,?,?,?,?,?,?,?)';
+      await scoreDb.execute(insertAssignment, [assignmentOne, 'Tes Nilai Satu', 'Instruksi tes satu.', 'Matematika', 'X IPA 2', dueAt, 100, admin.id]);
+      await scoreDb.execute(insertAssignment, [assignmentTwo, 'Tes Nilai Dua', 'Instruksi tes dua.', 'Matematika', 'X IPA 2', dueAt, 200, admin.id]);
+      const insertSubmission = 'INSERT INTO submissions (id,assignment_id,student_id,answer_text,score,feedback) VALUES (?,?,?,?,?,?)';
+      await scoreDb.execute(insertSubmission, [crypto.randomUUID(), assignmentOne, login.data.user.id, 'Jawaban siswa.', 80, '']);
+      await scoreDb.execute(insertSubmission, [crypto.randomUUID(), assignmentTwo, login.data.user.id, 'Jawaban siswa.', 160, '']);
+      await scoreDb.execute(insertSubmission, [crypto.randomUUID(), assignmentOne, secondStudent.id, 'Jawaban siswa.', 90, '']);
+      await scoreDb.execute(insertSubmission, [crypto.randomUUID(), assignmentTwo, secondStudent.id, 'Jawaban siswa.', 180, '']);
+    } finally {
+      await scoreDb.end();
+    }
 
     const ownMetrics = await api(baseUrl, `/api/search/${login.data.user.id}/profile`, { cookie: studentCookie });
     assert.equal(ownMetrics.data.averageScore, 80);
@@ -229,6 +263,10 @@ test('accounts auto-activate by default', { timeout: 30000 }, async () => {
   } finally {
     child.kill();
     if (child.exitCode === null) await new Promise(resolve => child.once('exit', resolve));
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    try {
+      await dropDatabase(databaseName);
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
   }
 });

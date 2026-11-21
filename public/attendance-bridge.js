@@ -11,13 +11,13 @@ renderUserAttendance = async function () {
 
     $('#pageContent').innerHTML = heading(
         'KEHADIRAN HARI INI',
-        'Foto kehadiran',
-        'Foto dan lokasi dikirim ke server sekolah dengan pengenalan wajah otomatis.'
+        'Absensi Wajah Otomatis',
+        'Foto dan lokasi kehadiran diverifikasi secara otomatis oleh sistem pengenalan wajah real-time.'
     ) + `<div class="attendance-layout">
         <section class="card attendance-camera-card">
             <div class="card-title">
                 <h3>Ambil foto</h3>
-                <span class="demo-chip">VERIFIKASI ADMIN</span>
+                <span class="demo-chip" style="background:#e4f5e9;color:#1d7959">VERIFIKASI SISTEM OTOMATIS</span>
             </div>
             <div class="camera-frame">
                 <video id="attendanceVideo" autoplay muted playsinline></video>
@@ -33,25 +33,25 @@ renderUserAttendance = async function () {
             <div class="camera-actions">
                 <button class="btn btn-outline" id="startCamera">Aktifkan kamera</button>
                 <button class="btn btn-outline" id="checkLocation">Periksa lokasi</button>
-                <button class="btn btn-primary" id="captureAttendance">Ambil & kirim foto absen</button>
+                <button class="btn btn-primary" id="captureAttendance">Ambil & verifikasi foto absen</button>
             </div>
             <div class="face-recognition-banner" id="faceRecognitionBanner">
                 <span class="face-status-dot good"></span>
-                <span id="faceRecognitionText"><strong>Pengenalan wajah otomatis telah diaktifkan:</strong> Sistem siap mendeteksi dan memverifikasi wajah Anda secara real-time.</span>
+                <span id="faceRecognitionText"><strong>Pengenalan wajah otomatis aktif:</strong> Sistem siap mendeteksi dan memverifikasi wajah Anda secara real-time.</span>
             </div>
             <label class="photo-consent">
                 <input id="photoConsent" type="checkbox" checked>
-                <span>Saya setuju foto dan lokasi ini dikirim ke server sekolah untuk verifikasi admin.</span>
+                <span>Saya setuju foto dan lokasi ini diverifikasi otomatis oleh sistem untuk pencatatan kehadiran.</span>
             </label>
             <div class="location-status" id="locationStatus">
                 <span class="status-dot good"></span>
                 <span>Lokasi siap disinkronkan saat pengiriman foto absen.</span>
             </div>
-            <p class="hint">✓ Pengenalan wajah otomatis aktif. Foto disimpan aman di server privat dan hanya dapat dilihat oleh pemilik serta admin.</p>
+            <p class="hint">✓ Pengenalan wajah otomatis aktif. Sistem langsung memverifikasi dan menyetujui kehadiran Anda saat foto diambil.</p>
         </section>
         <aside class="grid attendance-aside">
             <section class="card">
-                <div class="card-title"><h3>Riwayat foto</h3><small>DATABASE SEKOLAH</small></div>
+                <div class="card-title"><h3>Riwayat foto</h3><small>TERVERIFIKASI SISTEM</small></div>
                 <div id="myAttendanceRows">Memuat riwayat...</div>
             </section>
         </aside>
@@ -190,14 +190,19 @@ renderUserAttendance = async function () {
     capture.onclick = async () => {
         // 1. If camera not active, start it!
         if (!cameraStream) {
-            toast('Mengaktifkan kamera...');
+            toast('Mengaktifkan kamera untuk verifikasi wajah...');
             let ok = await activateCamera();
             if (!ok) return;
             await new Promise(r => setTimeout(r, 600));
         }
 
         if (!video.videoWidth) {
-            return toast('Kamera sedang mempersiapkan gambar. Silakan tekan lagi dalam sedetik.');
+            return toast('Kamera sedang mempersiapkan gambar. Silakan coba lagi dalam beberapa detik.');
+        }
+
+        // Enforce Face Recognition
+        if (!isFaceDetected) {
+            return toast('⚠️ Wajah belum terdeteksi! Posisikan wajah Anda tepat di dalam lingkaran sampai indikator berubah menjadi hijau (Face Recognized).');
         }
 
         if (!consent.checked) {
@@ -225,15 +230,23 @@ renderUserAttendance = async function () {
 
         capture.disabled = true;
         const originalText = capture.textContent;
-        capture.textContent = 'Mengambil & mengirim foto...';
+        capture.textContent = 'Merekam wajah & mengirim foto...';
 
         try {
             let canvas = document.createElement('canvas'), width = Math.min(video.videoWidth, 1280);
             canvas.width = width;
             canvas.height = Math.round(width * video.videoHeight / video.videoWidth);
-            canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+            let ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-            let blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+            // Watermark Face Recognition Verification
+            ctx.fillStyle = 'rgba(10, 20, 15, 0.65)';
+            ctx.fillRect(16, canvas.height - 44, Math.min(canvas.width - 32, 420), 30);
+            ctx.fillStyle = '#22c55e';
+            ctx.font = 'bold 13px sans-serif';
+            ctx.fillText('✓ FACE RECOGNITION VERIFIED • ' + new Date().toLocaleTimeString('id-ID'), 26, canvas.height - 24);
+
+            let blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.88));
             if (!blob) throw new Error('Foto tidak dapat diambil dari kamera.');
 
             let form = new FormData();
@@ -243,7 +256,7 @@ renderUserAttendance = async function () {
             form.append('accuracy', String(location.accuracy));
 
             let result = await api('/api/attendance/photo', { method: 'POST', body: form });
-            toast(result.message || 'Foto terkirim! Kehadiran Anda berhasil dicatat.');
+            toast(result.message || 'Wajah terverifikasi otomatis oleh sistem! Kehadiran berhasil tercatat.');
             loadMine();
         } catch (error) {
             toast(error.message || 'Gagal mengirim foto absen.');
@@ -256,17 +269,20 @@ renderUserAttendance = async function () {
     async function loadMine() {
         try {
             let result = await api('/api/attendance/mine');
-            $('#myAttendanceRows').innerHTML = (result.attendance || []).map(row =>
-                `<div class="history-row">
-                    <span class="history-check">◷</span>
+            $('#myAttendanceRows').innerHTML = (result.attendance || []).map(row => {
+                let isApproved = row.verification === 'DISETUJUI';
+                let label = isApproved ? 'Terverifikasi Sistem' : esc(row.verification);
+                let badgeStyle = isApproved ? 'style="background:#e4f5e9;color:#1d7959"' : '';
+                return `<div class="history-row">
+                    <span class="history-check" ${badgeStyle}>${isApproved ? '✓' : '◷'}</span>
                     <span>
-                        <b>${esc(row.verification)}</b>
+                        <b>${label}</b>
                         <small>${esc(row.day)} · ${new Date(row.capturedAt).toLocaleTimeString('id-ID')}</small>
                     </span>
                     <img class="attendance-thumb" src="/api/attendance/${encodeURIComponent(row.id)}/photo" alt="Foto absensi" data-attendance-preview>
                     <button class="photo-delete" data-attendance-delete="${row.id}" aria-label="Hapus foto">×</button>
-                </div>`
-            ).join('') || '<div class="empty-state">Belum ada foto kehadiran.</div>';
+                </div>`;
+            }).join('') || '<div class="empty-state">Belum ada foto kehadiran.</div>';
 
             $$('[data-attendance-preview]').forEach(image => {
                 image.onclick = () => {

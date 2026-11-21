@@ -20,10 +20,12 @@ const dataDir = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'
 const publicDir = path.join(__dirname, 'public');
 const photoDir = path.join(dataDir, 'attendance-photos');
 const submissionDir = path.join(dataDir, 'submissions');
+const postImageDir = path.join(dataDir, 'post-images');
+const assignmentAttachmentDir = path.join(dataDir, 'assignment-attachments');
 const isProduction = process.env.NODE_ENV === 'production';
 const googleEnabled = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 const autoActivateAccounts = process.env.AUTO_ACTIVATE_ACCOUNTS !== 'false';
-const photoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 3 * 1024 * 1024, files: 1 } });
+const photoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
 const submissionStorage = multer.diskStorage({
 	destination: (req, file, cb) => cb(null, submissionDir),
 	filename: (req, file, cb) => {
@@ -33,7 +35,31 @@ const submissionStorage = multer.diskStorage({
 });
 const submissionUpload = multer({
 	storage: submissionStorage,
-	limits: { fileSize: 15 * 1024 * 1024, files: 1 }
+	limits: { fileSize: 25 * 1024 * 1024, files: 1 }
+});
+
+const postImageStorage = multer.diskStorage({
+	destination: (req, file, cb) => cb(null, postImageDir),
+	filename: (req, file, cb) => {
+		const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+		cb(null, `${crypto.randomUUID()}${ext}`);
+	}
+});
+const postImageUpload = multer({
+	storage: postImageStorage,
+	limits: { fileSize: 10 * 1024 * 1024, files: 1 }
+});
+
+const assignmentStorage = multer.diskStorage({
+	destination: (req, file, cb) => cb(null, assignmentAttachmentDir),
+	filename: (req, file, cb) => {
+		const ext = path.extname(file.originalname);
+		cb(null, `${crypto.randomUUID()}${ext}`);
+	}
+});
+const assignmentUpload = multer({
+	storage: assignmentStorage,
+	limits: { fileSize: 25 * 1024 * 1024, files: 1 }
 });
 
 if (isProduction) {
@@ -52,6 +78,8 @@ if (isProduction) {
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(photoDir, { recursive: true });
 fs.mkdirSync(submissionDir, { recursive: true });
+fs.mkdirSync(postImageDir, { recursive: true });
+fs.mkdirSync(assignmentAttachmentDir, { recursive: true });
 
 const pool = mysql.createPool({
 	host: process.env.DB_HOST || 'localhost',
@@ -162,9 +190,12 @@ const databasePromise = (async () => {
 
 	await pool.execute(`CREATE TABLE IF NOT EXISTS posts (
 		id VARCHAR(36) PRIMARY KEY, author_id VARCHAR(36) NOT NULL, title VARCHAR(200) NOT NULL,
-		body TEXT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		body TEXT NOT NULL, image_name VARCHAR(255) DEFAULT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (author_id) REFERENCES users(id)
 	) ENGINE=InnoDB`);
+	try {
+		await pool.execute("ALTER TABLE posts ADD COLUMN image_name VARCHAR(255) DEFAULT NULL");
+	} catch (_) {}
 
 	await pool.execute(`CREATE TABLE IF NOT EXISTS post_likes (
 		post_id VARCHAR(36) NOT NULL, user_id VARCHAR(36) NOT NULL,
@@ -181,17 +212,48 @@ const databasePromise = (async () => {
 		FOREIGN KEY (author_id) REFERENCES users(id)
 	) ENGINE=InnoDB`);
 
+	await pool.execute(`CREATE TABLE IF NOT EXISTS classes (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		name VARCHAR(60) NOT NULL UNIQUE,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	) ENGINE=InnoDB`);
+	try {
+		const [existingClasses] = await pool.execute('SELECT COUNT(*) AS count FROM classes');
+		if (existingClasses[0].count === 0) {
+			const defaultClasses = [
+				'X RPL 1', 'X RPL 2', 'XI RPL 1', 'XI RPL 2', 'XII RPL 1', 'XII RPL 2',
+				'X TKJ 1', 'XI TKJ 1', 'XII TKJ 1'
+			];
+			for (const cls of defaultClasses) {
+				await pool.execute('INSERT IGNORE INTO classes (name) VALUES (?)', [cls]);
+			}
+			const [userClasses] = await pool.execute("SELECT DISTINCT detail FROM users WHERE role='SISWA' AND detail != ''");
+			for (const row of userClasses) {
+				const cName = (row.detail || '').trim();
+				if (cName) await pool.execute('INSERT IGNORE INTO classes (name) VALUES (?)', [cName]);
+			}
+		}
+	} catch (_) {}
+
 	await pool.execute(`CREATE TABLE IF NOT EXISTS assignments (
 		id VARCHAR(36) PRIMARY KEY, title VARCHAR(150) NOT NULL, instructions TEXT NOT NULL,
 		subject VARCHAR(80) NOT NULL, class_name VARCHAR(60) NOT NULL,
 		category ENUM('Teori','Bengkel') NOT NULL DEFAULT 'Teori',
 		due_at VARCHAR(30) NOT NULL,
 		max_score DOUBLE NOT NULL DEFAULT 100, created_by VARCHAR(36) NOT NULL,
+		attachment_name VARCHAR(255) DEFAULT NULL,
+		attachment_original_name VARCHAR(255) DEFAULT NULL,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (created_by) REFERENCES users(id)
 	) ENGINE=InnoDB`);
 	try {
 		await pool.execute("ALTER TABLE assignments ADD COLUMN category ENUM('Teori','Bengkel') NOT NULL DEFAULT 'Teori'");
+	} catch (_) {}
+	try {
+		await pool.execute("ALTER TABLE assignments ADD COLUMN attachment_name VARCHAR(255) DEFAULT NULL");
+	} catch (_) {}
+	try {
+		await pool.execute("ALTER TABLE assignments ADD COLUMN attachment_original_name VARCHAR(255) DEFAULT NULL");
 	} catch (_) {}
 
 	await pool.execute(`CREATE TABLE IF NOT EXISTS submissions (
@@ -252,7 +314,7 @@ const registerSchema = z.object({
 const loginSchema = z.object({ email: z.string().trim().email().max(120), password: z.string().min(1).max(128) });
 const googleIntentSchema = registerSchema.omit({ password: true });
 const accountStatusSchema = z.object({ status: z.enum(['AKTIF', 'NONAKTIF']) });
-const postSchema = z.object({ title: z.string().trim().min(5).max(120), body: z.string().trim().min(10).max(2000) });
+const postSchema = z.object({ title: z.string().trim().min(2).max(120), body: z.string().trim().min(2).max(2000) });
 const commentSchema = z.object({ body: z.string().trim().min(1).max(500) });
 const assignmentSchema = z.object({ title: z.string().trim().min(3).max(150), instructions: z.string().trim().min(5).max(5000), subject: z.string().trim().min(2).max(80), className: z.string().trim().min(2).max(60), category: z.enum(['Teori', 'Bengkel']).default('Teori'), dueAt: z.string().datetime(), maxScore: z.number().min(1).max(1000).default(100) });
 const settingsSchema = z.object({ latitude: z.number().min(-90).max(90), longitude: z.number().min(-180).max(180), radiusMeters: z.number().int().min(30).max(500), openTime: z.string().regex(/^\d{2}:\d{2}$/), closeTime: z.string().regex(/^\d{2}:\d{2}$/), lateAfter: z.string().regex(/^\d{2}:\d{2}$/) });
@@ -634,17 +696,34 @@ app.put('/api/profile/me', sameOrigin, requireActiveUser, async (req, res, next)
 app.get('/api/search', requireActiveUser, async (req, res, next) => {
 	const query = String(req.query.q || '').trim().slice(0, 80);
 	const role = String(req.query.role || '').toUpperCase();
+	const className = String(req.query.className || req.query.class || '').trim();
 	if (query.length === 1) return res.status(422).json({ error: 'Masukkan minimal 2 karakter.' });
 	if (role && !['SISWA', 'GURU', 'STAF', 'ADMIN'].includes(role)) return res.status(422).json({ error: 'Filter peran tidak valid.' });
 	try {
 		const db = await databasePromise;
 		const escapedQuery = query.replace(/[%_]/g, '');
 		const pattern = `%${escapedQuery}%`;
-		const people = await db.all(`SELECT id,full_name AS name,role,detail,bio
+		const isCurrentAdmin = req.user.role === 'ADMIN';
+
+		let sql = `SELECT id,full_name AS name,role,detail,bio
 			FROM users WHERE status='AKTIF'
 			AND (?='' OR full_name LIKE ? OR detail LIKE ?)
-			AND (?='' OR role=?)
-			ORDER BY full_name LIMIT 50`, query ? escapedQuery : '', pattern, pattern, role, role);
+			AND (?='' OR role=?)`;
+		const params = [query ? escapedQuery : '', pattern, pattern, role, role];
+
+		// Profil admin tidak ditampilkan di user siswa & guru
+		if (!isCurrentAdmin) {
+			sql += " AND role != 'ADMIN'";
+		}
+
+		// Filter kelas untuk siswa
+		if (className && className !== 'Semua Kelas' && className !== 'Semua') {
+			sql += " AND (LOWER(TRIM(detail)) = LOWER(TRIM(?)) OR LOWER(detail) LIKE CONCAT('%', LOWER(TRIM(?)), '%'))";
+			params.push(className, className);
+		}
+
+		sql += " ORDER BY full_name LIMIT 50";
+		const people = await db.all(sql, ...params);
 		res.json({ people });
 	} catch (error) {
 		next(error);
@@ -656,6 +735,10 @@ app.get('/api/search/:id/profile', requireActiveUser, async (req, res, next) => 
 		const db = await databasePromise;
 		const person = await db.get("SELECT id,full_name AS name,role,detail,bio FROM users WHERE id=? AND status='AKTIF'", req.params.id);
 		if (!person) return res.status(404).json({ error: 'Profil tidak ditemukan.' });
+		// Profil admin tidak ditampilkan di user siswa & guru
+		if (person.role === 'ADMIN' && req.user.role !== 'ADMIN') {
+			return res.status(404).json({ error: 'Profil admin dirahasiakan.' });
+		}
 		let canSeeAcademicMetrics = person.id === req.user.id || req.user.role === 'ADMIN';
 		if (!canSeeAcademicMetrics && req.user.role === 'GURU' && person.role === 'SISWA') {
 			canSeeAcademicMetrics = Boolean(await db.get('SELECT 1 FROM assignments WHERE created_by=? AND class_name=? LIMIT 1', req.user.id, person.detail));
@@ -722,14 +805,49 @@ app.patch('/api/notifications/:id/read', sameOrigin, requireActiveUser, async (r
 app.get('/api/posts', requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const rows = await db.all(`SELECT p.id,p.title,p.body,p.created_at AS createdAt,u.role AS authorRole,(p.author_id=?) AS isOwner,
+		const isAdmin = req.user.role === 'ADMIN';
+		const rows = await db.all(`SELECT p.id,p.title,p.body,p.image_name AS imageName,p.created_at AS createdAt,
+			u.role AS authorRole,
+			u.full_name AS realAuthorName,
+			u.email AS realAuthorEmail,
+			u.detail AS realAuthorDetail,
+			u.identity_number AS realAuthorIdentity,
+			(p.author_id=?) AS isOwner,
 			(SELECT COUNT(*) FROM post_likes l WHERE l.post_id=p.id) AS likes,
 			EXISTS(SELECT 1 FROM post_likes l WHERE l.post_id=p.id AND l.user_id=?) AS liked
 			FROM posts p JOIN users u ON u.id=p.author_id ORDER BY p.created_at DESC LIMIT 50`, req.user.id, req.user.id);
-		const isAdmin = req.user.role === 'ADMIN';
+
 		for (const post of rows) {
 			post.canDelete = Boolean(post.isOwner || isAdmin);
-			post.comments = await db.all(`SELECT c.id,c.body,c.created_at AS createdAt FROM comments c WHERE c.post_id=? ORDER BY c.created_at ASC`, post.id);
+			if (isAdmin) {
+				post.authorName = post.realAuthorName;
+				post.authorEmail = post.realAuthorEmail;
+				post.authorDetail = post.realAuthorDetail;
+				post.authorIdentity = post.realAuthorIdentity;
+			} else {
+				post.authorName = null;
+				post.authorEmail = null;
+				post.authorDetail = null;
+				post.authorIdentity = null;
+			}
+			delete post.realAuthorName;
+			delete post.realAuthorEmail;
+			delete post.realAuthorDetail;
+			delete post.realAuthorIdentity;
+
+			const comments = await db.all(`SELECT c.id,c.body,c.created_at AS createdAt,
+				cu.full_name AS realAuthorName, cu.role AS authorRole, cu.detail AS realAuthorDetail
+				FROM comments c JOIN users cu ON cu.id=c.author_id WHERE c.post_id=? ORDER BY c.created_at ASC`, post.id);
+
+			post.comments = comments.map(c => {
+				const item = { id: c.id, body: c.body, createdAt: c.createdAt };
+				if (isAdmin) {
+					item.authorName = c.realAuthorName;
+					item.authorRole = c.authorRole;
+					item.authorDetail = c.realAuthorDetail;
+				}
+				return item;
+			});
 		}
 		res.json({ posts: rows });
 	} catch (error) {
@@ -737,13 +855,33 @@ app.get('/api/posts', requireActiveUser, async (req, res, next) => {
 	}
 });
 
-app.post('/api/posts', sameOrigin, requireActiveUser, async (req, res, next) => {
-	const parsed = postSchema.safeParse(req.body);
-	if (!parsed.success) return res.status(422).json({ error: 'Judul atau isi topik tidak memenuhi batas karakter.' });
+app.post('/api/posts', sameOrigin, requireActiveUser, postImageUpload.single('image'), async (req, res, next) => {
+	const title = (req.body.title || '').trim();
+	const body = (req.body.body || '').trim();
+	const parsed = postSchema.safeParse({ title, body });
+	if (!parsed.success) {
+		if (req.file) fs.unlink(req.file.path, () => {});
+		return res.status(422).json({ error: 'Judul atau isi topik tidak memenuhi batas karakter.' });
+	}
 	try {
 		const db = await databasePromise, id = crypto.randomUUID();
-		await db.run('INSERT INTO posts (id, author_id, title, body) VALUES (?, ?, ?, ?)', id, req.user.id, parsed.data.title, parsed.data.body);
-		res.status(201).json({ id });
+		const imageName = req.file ? path.basename(req.file.filename) : null;
+		await db.run('INSERT INTO posts (id, author_id, title, body, image_name) VALUES (?, ?, ?, ?, ?)', id, req.user.id, parsed.data.title, parsed.data.body, imageName);
+		res.status(201).json({ id, imageName });
+	} catch (error) {
+		if (req.file) fs.unlink(req.file.path, () => {});
+		next(error);
+	}
+});
+
+app.get('/api/posts/:id/image', requireActiveUser, async (req, res, next) => {
+	try {
+		const db = await databasePromise;
+		const post = await db.get('SELECT image_name FROM posts WHERE id=?', req.params.id);
+		if (!post || !post.image_name) return res.status(404).json({ error: 'Gambar tidak ditemukan.' });
+		const filePath = path.join(postImageDir, path.basename(post.image_name));
+		if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File gambar tidak ditemukan di server.' });
+		res.sendFile(filePath);
 	} catch (error) {
 		next(error);
 	}
@@ -778,7 +916,7 @@ app.post('/api/posts/:id/comments', sameOrigin, requireActiveUser, async (req, r
 app.delete('/api/posts/:id', sameOrigin, requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const post = await db.get('SELECT author_id,created_at FROM posts WHERE id=?', req.params.id);
+		const post = await db.get('SELECT author_id,created_at,image_name FROM posts WHERE id=?', req.params.id);
 		if (!post) return res.status(404).json({ error: 'Topik tidak ditemukan.' });
 		
 		let createdAtMs = 0;
@@ -797,6 +935,9 @@ app.delete('/api/posts/:id', sameOrigin, requireActiveUser, async (req, res, nex
 		await db.run('DELETE FROM comments WHERE post_id=?', req.params.id);
 		await db.run('DELETE FROM post_likes WHERE post_id=?', req.params.id);
 		await db.run('DELETE FROM posts WHERE id=?', req.params.id);
+		if (post.image_name) {
+			fs.unlink(path.join(postImageDir, path.basename(post.image_name)), () => {});
+		}
 		res.json({ ok: true });
 	} catch (error) {
 		next(error);
@@ -807,12 +948,13 @@ app.get('/api/assignments', requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
 		let assignments = [];
-		const classRows = await db.all("SELECT DISTINCT detail FROM users WHERE role='SISWA' AND detail != '' ORDER BY detail ASC");
-		const availableClasses = ['Semua Kelas', ...classRows.map(r => r.detail)];
+		const classRows = await db.all("SELECT name FROM classes ORDER BY name ASC");
+		const availableClasses = ['Semua Kelas', ...classRows.map(r => r.name)];
 
 		if (req.user.role === 'ADMIN') {
 			assignments = await db.all(`
 				SELECT a.id, a.title, a.instructions AS description, a.subject, a.class_name AS class, a.category, a.due_at AS due, a.max_score AS maxScore, u.full_name AS teacherName,
+				       a.attachment_name AS attachmentName, a.attachment_original_name AS attachmentOriginalName,
 				       (SELECT COUNT(*) FROM submissions s WHERE s.assignment_id = a.id) AS submissionCount
 				FROM assignments a
 				LEFT JOIN users u ON u.id = a.created_by
@@ -821,6 +963,7 @@ app.get('/api/assignments', requireActiveUser, async (req, res, next) => {
 		} else if (req.user.role === 'GURU') {
 			assignments = await db.all(`
 				SELECT a.id, a.title, a.instructions AS description, a.subject, a.class_name AS class, a.category, a.due_at AS due, a.max_score AS maxScore, u.full_name AS teacherName,
+				       a.attachment_name AS attachmentName, a.attachment_original_name AS attachmentOriginalName,
 				       (SELECT COUNT(*) FROM submissions s WHERE s.assignment_id = a.id) AS submissionCount
 				FROM assignments a
 				LEFT JOIN users u ON u.id = a.created_by
@@ -831,6 +974,7 @@ app.get('/api/assignments', requireActiveUser, async (req, res, next) => {
 			const studentClass = (req.user.detail || '').trim();
 			assignments = await db.all(`
 				SELECT a.id, a.title, a.instructions AS description, a.subject, a.class_name AS class, a.category, a.due_at AS due, a.max_score AS maxScore, u.full_name AS teacherName,
+				       a.attachment_name AS attachmentName, a.attachment_original_name AS attachmentOriginalName,
 				       s.id AS submissionId, s.submitted_at AS submittedAt, s.file_name AS fileName, s.file_original_name AS fileOriginalName,
 				       s.score, s.feedback, s.answer_text AS answerText
 				FROM assignments a
@@ -850,15 +994,47 @@ app.get('/api/assignments', requireActiveUser, async (req, res, next) => {
 	}
 });
 
-app.post('/api/assignments', sameOrigin, requireActiveUser, async (req, res, next) => {
-	if (!['GURU', 'ADMIN'].includes(req.user.role)) return res.status(403).json({ error: 'Hanya guru yang dapat membuat tugas.' });
-	const parsed = assignmentSchema.safeParse(req.body);
-	if (!parsed.success) return res.status(422).json({ error: 'Data tugas tidak valid.' });
+app.post('/api/assignments', sameOrigin, requireActiveUser, assignmentUpload.single('attachment'), async (req, res, next) => {
+	if (!['GURU', 'ADMIN'].includes(req.user.role)) {
+		if (req.file) fs.unlink(req.file.path, () => {});
+		return res.status(403).json({ error: 'Hanya guru yang dapat membuat tugas.' });
+	}
+	const taskPayload = {
+		title: req.body.title,
+		instructions: req.body.instructions,
+		subject: req.body.subject,
+		className: req.body.className,
+		category: req.body.category || 'Teori',
+		dueAt: req.body.dueAt,
+		maxScore: Number(req.body.maxScore || 100)
+	};
+	const parsed = assignmentSchema.safeParse(taskPayload);
+	if (!parsed.success) {
+		if (req.file) fs.unlink(req.file.path, () => {});
+		return res.status(422).json({ error: 'Data tugas tidak valid.' });
+	}
 	try {
 		const task = parsed.data, id = crypto.randomUUID(), db = await databasePromise;
-		await db.run('INSERT INTO assignments (id,title,instructions,subject,class_name,category,due_at,max_score,created_by) VALUES (?,?,?,?,?,?,?,?,?)', id, task.title, task.instructions, task.subject, task.className, task.category, task.dueAt, task.maxScore, req.user.id);
+		const attachmentName = req.file ? path.basename(req.file.filename) : null;
+		const attachmentOriginalName = req.file ? req.file.originalname : null;
+		await db.run('INSERT INTO assignments (id,title,instructions,subject,class_name,category,due_at,max_score,created_by,attachment_name,attachment_original_name) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+			id, task.title, task.instructions, task.subject, task.className, task.category, task.dueAt, task.maxScore, req.user.id, attachmentName, attachmentOriginalName);
 		await notifyClassStudents(db, task.className, `Tugas Baru: ${task.title}`, `${task.subject} (${task.category}) untuk ${task.className}. Tenggat: ${task.dueAt.slice(0, 10)}`);
-		res.status(201).json({ id });
+		res.status(201).json({ id, attachmentName, attachmentOriginalName });
+	} catch (error) {
+		if (req.file) fs.unlink(req.file.path, () => {});
+		next(error);
+	}
+});
+
+app.get('/api/assignments/:id/attachment', requireActiveUser, async (req, res, next) => {
+	try {
+		const db = await databasePromise;
+		const assignment = await db.get('SELECT attachment_name, attachment_original_name FROM assignments WHERE id=?', req.params.id);
+		if (!assignment || !assignment.attachment_name) return res.status(404).json({ error: 'Lampiran berkas tidak ditemukan.' });
+		const filePath = path.join(assignmentAttachmentDir, path.basename(assignment.attachment_name));
+		if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File lampiran tidak ditemukan di server.' });
+		res.download(filePath, assignment.attachment_original_name || 'lampiran_tugas');
 	} catch (error) {
 		next(error);
 	}
@@ -1049,19 +1225,25 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 		if (existing) {
 			const photoName = `${existing.id}${extension}`;
 			await fs.promises.writeFile(path.join(photoDir, photoName), req.file.buffer, { flag: 'w', mode: 0o600 });
-			await db.run('UPDATE attendance SET photo_name=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="MENUNGGU" WHERE id=?', photoName, latitude, longitude, accuracy, now.toISOString(), existing.id);
-			return res.status(200).json({ id: existing.id, verification: 'MENUNGGU', capturedAt: now.toISOString(), message: 'Foto kehadiran hari ini berhasil diperbarui.' });
+			await db.run('UPDATE attendance SET photo_name=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="DISETUJUI" WHERE id=?', photoName, latitude, longitude, accuracy, now.toISOString(), existing.id);
+			await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+				crypto.randomUUID(), req.user.id, 'Kehadiran Terverifikasi Otomatis',
+				`Foto kehadiran dan wajah Anda untuk tanggal ${day} berhasil diperbarui dan diverifikasi otomatis oleh sistem.`);
+			return res.status(200).json({ id: existing.id, verification: 'DISETUJUI', capturedAt: now.toISOString(), message: 'Foto kehadiran berhasil diperbarui dan diverifikasi otomatis oleh sistem.' });
 		}
 		const id = crypto.randomUUID(), photoName = `${id}${extension}`;
 		await fs.promises.writeFile(path.join(photoDir, photoName), req.file.buffer, { flag: 'wx', mode: 0o600 });
 		try {
-			await db.run('INSERT INTO attendance (id,user_id,day,photo_name,latitude,longitude,accuracy,captured_at,verification) VALUES (?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, latitude, longitude, accuracy, now.toISOString(), 'MENUNGGU');
+			await db.run('INSERT INTO attendance (id,user_id,day,photo_name,latitude,longitude,accuracy,captured_at,verification) VALUES (?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, latitude, longitude, accuracy, now.toISOString(), 'DISETUJUI');
+			await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+				crypto.randomUUID(), req.user.id, 'Kehadiran Terverifikasi Otomatis',
+				`Wajah dan lokasi kehadiran Anda untuk tanggal ${day} berhasil diverifikasi otomatis oleh sistem.`);
 		} catch (error) {
 			await fs.promises.unlink(path.join(photoDir, photoName)).catch(() => {});
 			if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Foto kehadiran hari ini sudah tercatat.' });
 			throw error;
 		}
-		res.status(201).json({ id, verification: 'MENUNGGU', capturedAt: now.toISOString() });
+		res.status(201).json({ id, verification: 'DISETUJUI', capturedAt: now.toISOString(), message: 'Wajah terverifikasi otomatis oleh sistem! Kehadiran Anda telah dicatat.' });
 	} catch (error) {
 		next(error);
 	}
@@ -1102,7 +1284,7 @@ app.delete('/api/attendance/:id', sameOrigin, requireActiveUser, async (req, res
 app.get('/api/admin/attendance', requireActiveUser, requireAdmin, async (_, res, next) => {
 	try {
 		const db = await databasePromise;
-		res.json({ attendance: await db.all(`SELECT a.id,a.day,a.captured_at AS capturedAt,a.verification,u.full_name AS name,u.email,u.role
+		res.json({ attendance: await db.all(`SELECT a.id,a.day,a.captured_at AS capturedAt,a.verification,a.latitude,a.longitude,a.accuracy,u.full_name AS name,u.email,u.role,u.detail AS detail
 			FROM attendance a JOIN users u ON u.id=a.user_id ORDER BY a.captured_at DESC LIMIT 500`) });
 	} catch (error) {
 		next(error);
@@ -1113,9 +1295,53 @@ app.patch('/api/admin/attendance/:id', sameOrigin, requireActiveUser, requireAdm
 	const parsed = attendanceDecisionSchema.safeParse(req.body);
 	if (!parsed.success) return res.status(422).json({ error: 'Keputusan tidak valid.' });
 	try {
-		const db = await databasePromise, result = await db.run('UPDATE attendance SET verification=? WHERE id=? AND verification=?', parsed.data.verification, req.params.id, 'MENUNGGU');
+		const db = await databasePromise;
+		const record = await db.get('SELECT user_id, day FROM attendance WHERE id=?', req.params.id);
+		if (!record) return res.status(404).json({ error: 'Pengajuan kehadiran tidak ditemukan.' });
+		const result = await db.run('UPDATE attendance SET verification=? WHERE id=?', parsed.data.verification, req.params.id);
 		if (!result.changes) return res.status(404).json({ error: 'Pengajuan tidak ditemukan atau sudah diputuskan.' });
-		res.json({ ok: true });
+		await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+			crypto.randomUUID(), record.user_id, 'Status Kehadiran',
+			`Foto kehadiran Anda tanggal ${record.day} telah diverifikasi dengan status: ${parsed.data.verification}.`
+		);
+		res.json({ ok: true, verification: parsed.data.verification });
+	} catch (error) {
+		next(error);
+	}
+});
+
+// Classes Management API
+app.get('/api/classes', async (req, res, next) => {
+	try {
+		const db = await databasePromise;
+		const rows = await db.all('SELECT id, name FROM classes ORDER BY name ASC');
+		res.json({ classes: rows, classNames: rows.map(r => r.name) });
+	} catch (error) {
+		next(error);
+	}
+});
+
+app.post('/api/classes', sameOrigin, requireActiveUser, requireAdmin, async (req, res, next) => {
+	const name = String(req.body.name || '').trim();
+	if (name.length < 2 || name.length > 60) return res.status(422).json({ error: 'Nama kelas minimal 2 dan maksimal 60 karakter.' });
+	try {
+		const db = await databasePromise;
+		const existing = await db.get('SELECT id FROM classes WHERE LOWER(name) = LOWER(?)', name);
+		if (existing) return res.status(409).json({ error: 'Kelas sudah ada di dalam sistem.' });
+		const result = await db.run('INSERT INTO classes (name) VALUES (?)', name);
+		res.status(201).json({ id: result.lastID, name });
+	} catch (error) {
+		next(error);
+	}
+});
+
+app.delete('/api/classes/:id', sameOrigin, requireActiveUser, requireAdmin, async (req, res, next) => {
+	try {
+		const db = await databasePromise;
+		const cls = await db.get('SELECT id, name FROM classes WHERE id=?', req.params.id);
+		if (!cls) return res.status(404).json({ error: 'Kelas tidak ditemukan.' });
+		await db.run('DELETE FROM classes WHERE id=?', req.params.id);
+		res.json({ ok: true, message: `Kelas ${cls.name} berhasil dihapus.` });
 	} catch (error) {
 		next(error);
 	}
