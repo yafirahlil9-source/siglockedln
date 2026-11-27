@@ -1648,7 +1648,15 @@ app.delete('/api/classes/:id', sameOrigin, requireActiveUser, requireAdmin, asyn
 	}
 });
 
-app.use(express.static(publicDir, { index: 'index.html', maxAge: isProduction ? '1h' : 0 }));
+app.use(express.static(publicDir, {
+	index: 'index.html',
+	maxAge: isProduction ? '1h' : 0,
+	setHeaders(res, filePath) {
+		if (filePath.endsWith('.html') || filePath.endsWith('.css')) {
+			res.set('Cache-Control', 'no-cache');
+		}
+	}
+}));
 app.use((error, req, res, next) => {
 	console.error('Request gagal:', error.message);
 	if (res.headersSent) return next(error);

@@ -926,15 +926,18 @@ button.eye-btn.pop {
   pointer-events: none;
 }
 .hero-card::after {
-  content: "✳";
+  content: "";
   position: absolute;
-  font-size: 195px;
-  color: rgba(255, 255, 255, 0.035);
+  width: 180px;
+  height: 180px;
   right: 18px;
   top: -48px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M44 6h12v29l20-20 9 9-20 20h29v12H65l20 20-9 9-20-20v29H44V65L24 85l-9-9 20-20H6V44h29L15 24l9-9 20 20V6z' fill='%23fff' fill-opacity='.035'/%3E%3C/svg%3E") center / contain no-repeat;
   pointer-events: none;
 }
 .hero-card .eyebrow {
+  position: relative;
+  z-index: 1;
   color: var(--lime);
   border-color: rgba(190, 242, 100, 0.25);
   background: rgba(190, 242, 100, 0.09);
@@ -2097,6 +2100,8 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator {
 
   /* ── Hero Card ───────────────────────────────────────────── */
   .hero-card { padding: 20px 16px; border-radius: var(--r-lg); }
+  .hero-card::after { content: none; }
+  .hero-card::before { width: 160px; height: 160px; right: -40px; bottom: -60px; }
   .hero-card h2 { font-size: 20px; line-height: 1.3; }
   .hero-card p { font-size: 13px; }
   .hero-card .btn { width: 100%; justify-content: center; }
@@ -2168,7 +2173,10 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator {
 
 @media (max-width: 480px) {
   .metric-row { grid-template-columns: 1fr; }
-  .stat-number { font-size: 24px; }
+  .stat-number { font-size: 24px; margin-top: 10px; }
+  .stat-icon { width: 34px; height: 34px; font-size: 15px; }
+  .stat-change { padding: 3px 7px; font-size: 9.5px; }
+  .stat-label { font-size: 11px; }
   .card { padding: 12px; border-radius: var(--r-md); }
   .hero-card { padding: 18px 14px; border-radius: var(--r-md); }
   .hero-card h2 { font-size: 18px; }
@@ -2178,8 +2186,8 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator {
   .page-heading h1 { font-size: 20px; }
   .topbar { height: 52px; padding: 0 10px; }
   .notif-btn { width: 34px; height: 34px; font-size: 16px; }
-  .three-col:has(.stat-card) { grid-template-columns: 1fr; }
-  .three-col:has(.stat-card) > .stat-card:nth-child(3):last-child { grid-column: auto; }
+  .three-col:has(.stat-card) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .three-col:has(.stat-card) > .stat-card:nth-child(3):last-child { grid-column: 1 / -1; }
   .task-actions .btn { font-size: 12px; padding: 6px 8px; }
   .profile-cover { height: 90px; }
   .profile-avatar { width: 68px; height: 68px; }
