@@ -953,12 +953,8 @@ button.eye-btn.pop {
 @media (max-width: 900px) {
   .checkbox-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .export-filter-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
-  .settings-layout { grid-template-columns: 1fr; }
-  .geofence-card:not(.compact) { display: grid; grid-template-columns: minmax(180px,260px) 1fr; column-gap: 20px; align-items: center; }
-  .geofence-card:not(.compact) .card-title, .geofence-card:not(.compact) .hint { grid-column: 1/-1; }
 }
 @media (max-width: 600px) {
-  .geofence-card:not(.compact) { display: block; }
   .export-filter-grid { grid-template-columns: 1fr 1fr; }
   .export-actions { flex-direction: column; }
   .teacher-assignment-card summary { align-items: flex-start; }
@@ -1464,25 +1460,6 @@ button.eye-btn.pop {
 .photo-unavailable-label { max-width: 90px; padding: 7px; border: 1px dashed rgba(251,113,133,.4); border-radius: var(--r-sm); color: var(--red); font-size: 10px; line-height: 1.35; text-align: center; }
 .photo-unavailable .attendance-thumb { display: none; }
 
-.settings-layout { display: grid; grid-template-columns: minmax(0,1.5fr) minmax(280px,.75fr); gap: 18px; align-items: start; }
-.geofence-card { min-width: 0; }
-.geofence-visual { position: relative; width: min(100%, 290px); aspect-ratio: 1; margin: 4px auto 18px; overflow: hidden; border: 1px solid var(--line); border-radius: 50%; background: radial-gradient(circle, rgba(52,211,153,.12), rgba(52,211,153,.02) 65%, transparent 66%); }
-.geofence-ring { position: absolute; inset: 9%; border: 1px solid rgba(52,211,153,.45); border-radius: 50%; }
-.geofence-ring.ring-inner { inset: 27%; border-style: dashed; opacity: .55; }
-.geofence-cross { position: absolute; background: rgba(148,163,184,.15); }
-.cross-horizontal { width: 100%; height: 1px; top: 50%; left: 0; }
-.cross-vertical { height: 100%; width: 1px; left: 50%; top: 0; }
-.school-point { position: absolute; left: 50%; top: 50%; width: 28px; height: 28px; transform: translate(-50%,-50%); display: grid; place-items: center; border: 1px solid rgba(52,211,153,.55); border-radius: 50%; background: rgba(52,211,153,.15); box-shadow: 0 0 24px rgba(52,211,153,.25); }
-.school-point span { width: 10px; height: 10px; border-radius: 50%; background: var(--emerald); box-shadow: 0 0 0 5px rgba(52,211,153,.15); }
-.radius-label { position: absolute; left: 50%; top: 19%; transform: translateX(-50%); padding: 3px 7px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--emerald); font-size: 10px; font-weight: 800; }
-.geofence-details { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
-.geofence-details > span:first-child { display: grid; gap: 4px; min-width: 0; }
-.geofence-details small { color: var(--muted); font-size: 10px; }
-.geofence-details b { font-size: 11px; overflow-wrap: anywhere; }
-.geofence-card.compact .card-title { margin-bottom: 10px; padding-bottom: 9px; }
-.geofence-card.compact .geofence-visual { width: min(100%, 190px); margin-bottom: 12px; }
-.geofence-card.compact .hint { margin-bottom: 0; }
-
 .photo-delete {
   width: 28px;
   height: 28px;
@@ -1624,6 +1601,15 @@ button.eye-btn.pop {
   color: var(--lime);
   border-color: rgba(52, 211, 153, 0.45);
   box-shadow: 0 0 16px rgba(52, 211, 153, 0.16);
+}
+.learning-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.learning-tab { min-width: 112px; text-align: center; cursor: pointer; }
+.learning-section-heading { margin-bottom: 18px; }
+.learning-section-heading .btn { flex-shrink: 0; }
+#learningPanel:focus { outline: none; }
+@media (max-width: 600px) {
+  .learning-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .learning-tab { min-width: 0; }
 }
 .class-chips-wrap { border-radius: var(--r-md) !important; }
 

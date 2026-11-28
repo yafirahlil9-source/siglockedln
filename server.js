@@ -421,9 +421,11 @@ const databasePromise = (async () => {
 		photo_name VARCHAR(100) NOT NULL, latitude DOUBLE NOT NULL, longitude DOUBLE NOT NULL,
 		accuracy DOUBLE NOT NULL, captured_at VARCHAR(30) NOT NULL,
 		verification ENUM('MENUNGGU','DISETUJUI','DITOLAK') NOT NULL DEFAULT 'MENUNGGU',
+		rejection_reason VARCHAR(30) DEFAULT NULL,
 		UNIQUE(user_id, day),
 		FOREIGN KEY (user_id) REFERENCES pengguna(id)
 	) ENGINE=InnoDB`);
+	try { await pool.execute("ALTER TABLE kehadiran ADD COLUMN rejection_reason VARCHAR(30) DEFAULT NULL"); } catch (_) {}
 
 	await pool.execute(`CREATE TABLE IF NOT EXISTS notifikasi (
 		id VARCHAR(36) PRIMARY KEY, user_id VARCHAR(36) NOT NULL,
@@ -2162,15 +2164,39 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 			return res.status(403).json({ error: 'Pemeriksaan awal wajah tidak cocok dengan data akun. Silakan ulangi di depan kamera.' });
 		}
 		const distance = haversineMeters(latitude, longitude, settings.latitude, settings.longitude);
-		if (distance + accuracy > settings.radius_meters) return res.status(403).json({ error: `Di luar radius sekolah (${Math.round(distance)} meter, akurasi GPS ${Math.round(accuracy)} meter).` });
 		const now = new Date(), localTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now);
-		if (isProduction && (localTime < settings.open_time || localTime > settings.close_time)) return res.status(403).json({ error: `Absen dibuka pukul ${settings.open_time}–${settings.close_time} WIB.` });
 		const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
-		const existing = await db.get('SELECT id, photo_name FROM kehadiran WHERE user_id=? AND day=?', req.user.id, day);
+		const existing = await db.get('SELECT id, photo_name, verification, rejection_reason FROM kehadiran WHERE user_id=? AND day=?', req.user.id, day);
+		if (distance + accuracy > settings.radius_meters) {
+			const message = `Absen ditolak. Di luar radius sekolah (${Math.round(distance)} meter, akurasi GPS ${Math.round(accuracy)} meter) dan dianggap tidak hadir.`;
+			if (existing) {
+				return res.status(403).json({
+					error: existing.verification === 'DITOLAK' ? message : `${message} Kehadiran hari ini tidak diubah.`,
+					id: existing.id,
+					verification: existing.verification,
+					rejectionReason: existing.rejection_reason,
+					absent: existing.verification === 'DITOLAK'
+				});
+			}
+			const id = crypto.randomUUID(), photoName = `${id}${extension}`;
+			await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer);
+			try {
+				await db.run('INSERT INTO kehadiran (id,user_id,day,photo_name,latitude,longitude,accuracy,captured_at,verification,rejection_reason) VALUES (?,?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, latitude, longitude, accuracy, now.toISOString(), 'DITOLAK', 'LOKASI');
+			} catch (error) {
+				await fs.promises.unlink(path.join(photoDir, photoName)).catch(() => {});
+				if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Foto kehadiran hari ini sudah tercatat.' });
+				throw error;
+			}
+			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
+				crypto.randomUUID(), req.user.id, 'Absen Ditolak Otomatis',
+				`Absen tanggal ${day} ditolak karena lokasi di luar radius sekolah. Anda dianggap tidak hadir.`);
+			return res.status(403).json({ error: message, id, verification: 'DITOLAK', rejectionReason: 'LOKASI', absent: true });
+		}
+		if (isProduction && (localTime < settings.open_time || localTime > settings.close_time)) return res.status(403).json({ error: `Absen dibuka pukul ${settings.open_time}–${settings.close_time} WIB.` });
 		if (existing) {
 			const photoName = `${existing.id}${extension}`;
 			await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer, true);
-			await db.run('UPDATE kehadiran SET photo_name=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="MENUNGGU" WHERE id=?', photoName, latitude, longitude, accuracy, now.toISOString(), existing.id);
+			await db.run('UPDATE kehadiran SET photo_name=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="MENUNGGU", rejection_reason=NULL WHERE id=?', photoName, latitude, longitude, accuracy, now.toISOString(), existing.id);
 			if (existing.photo_name && existing.photo_name !== photoName) {
 				await fs.promises.unlink(path.join(photoDir, path.basename(existing.photo_name))).catch(() => {});
 			}
@@ -2238,7 +2264,7 @@ app.delete('/api/attendance/:id', sameOrigin, requireActiveUser, async (req, res
 app.get('/api/admin/attendance', requireActiveUser, requireAdmin, async (_, res, next) => {
 	try {
 		const db = await databasePromise;
-		res.json({ attendance: await db.all(`SELECT a.id,a.day,a.captured_at AS capturedAt,a.verification,a.latitude,a.longitude,a.accuracy,u.full_name AS name,u.email,u.role,u.detail AS detail
+		res.json({ attendance: await db.all(`SELECT a.id,a.day,a.captured_at AS capturedAt,a.verification,a.rejection_reason AS rejectionReason,a.latitude,a.longitude,a.accuracy,u.full_name AS name,u.email,u.role,u.detail AS detail
 			FROM kehadiran a JOIN pengguna u ON u.id=a.user_id ORDER BY a.captured_at DESC LIMIT 500`) });
 	} catch (error) {
 		next(error);
@@ -2250,8 +2276,11 @@ app.patch('/api/admin/attendance/:id', sameOrigin, requireActiveUser, requireAdm
 	if (!parsed.success) return res.status(422).json({ error: 'Keputusan tidak valid.' });
 	try {
 		const db = await databasePromise;
-		const record = await db.get('SELECT user_id, day FROM kehadiran WHERE id=?', req.params.id);
+		const record = await db.get('SELECT user_id, day, rejection_reason FROM kehadiran WHERE id=?', req.params.id);
 		if (!record) return res.status(404).json({ error: 'Pengajuan kehadiran tidak ditemukan.' });
+		if (record.rejection_reason === 'LOKASI' && parsed.data.verification === 'DISETUJUI') {
+			return res.status(409).json({ error: 'Absen yang ditolak otomatis karena di luar radius sekolah tidak dapat disetujui.' });
+		}
 		const result = await db.run('UPDATE kehadiran SET verification=? WHERE id=?', parsed.data.verification, req.params.id);
 		if (!result.changes) return res.status(404).json({ error: 'Pengajuan tidak ditemukan atau sudah diputuskan.' });
 		await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',

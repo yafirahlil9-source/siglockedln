@@ -89,7 +89,6 @@ renderUserAttendance = async function () {
         </section>
 
         <aside class="grid attendance-aside">
-            ${geofenceCardHtml(true)}
             <section class="card">
                 <div class="card-title"><h3>Riwayat foto</h3><small>MENUNGGU / DIPERIKSA ADMIN</small></div>
                 <div id="myAttendanceRows">Memuat riwayat...</div>
@@ -266,18 +265,20 @@ renderUserAttendance = async function () {
         });
         const { settings } = await api('/api/attendance/settings');
         const meters = Math.round(distanceMeters(position.coords.latitude, position.coords.longitude, settings.latitude, settings.longitude));
-        if (position.coords.accuracy > 100) throw new Error(`Akurasi GPS terlalu rendah (${Math.round(position.coords.accuracy)} meter).`);
-        if (meters + position.coords.accuracy > Number(settings.radiusMeters)) throw new Error(`Di luar radius sekolah (${meters} meter + akurasi ${Math.round(position.coords.accuracy)} meter).`);
+        const accuracy = Math.round(position.coords.accuracy);
+        if (position.coords.accuracy > 100) throw new Error(`Akurasi GPS terlalu rendah (${accuracy} meter).`);
         location = position.coords;
-        return { meters, accuracy: Math.round(position.coords.accuracy) };
+        return { meters, accuracy, inside: meters + position.coords.accuracy <= Number(settings.radiusMeters) };
     }
 
     $('#checkLocation').onclick = async () => {
         $('#locationStatus').innerHTML = '<span class="status-dot pending"></span><span>Memeriksa lokasi...</span>';
         try {
             const result = await verifySchoolLocation();
-            $('#locationStatus').innerHTML = `<span class="status-dot good"></span><span>Dalam radius sekolah · ${result.meters} m · akurasi ${result.accuracy} m</span>`;
-            toast('Lokasi berada di dalam radius sekolah.');
+            $('#locationStatus').innerHTML = result.inside
+                ? `<span class="status-dot good"></span><span>Dalam radius sekolah · ${result.meters} m · akurasi ${result.accuracy} m</span>`
+                : `<span class="status-dot warning"></span><span>Di luar jangkauan sekolah · ${result.meters} m · akurasi ${result.accuracy} m</span>`;
+            toast(result.inside ? 'Lokasi berada di dalam radius sekolah.' : 'Di luar jangkauan sekolah. Absen akan ditolak dan dianggap tidak hadir.');
         } catch (error) {
             location = null;
             $('#locationStatus').innerHTML = '<span class="status-dot warning"></span><span>Lokasi belum valid untuk absensi.</span>';
@@ -333,12 +334,16 @@ renderUserAttendance = async function () {
 
         // 5. Lokasi
         $('#locationStatus').innerHTML = '<span class="status-dot pending"></span><span>Memverifikasi lokasi absensi...</span>';
+        let locationResult;
         try {
-            const verifiedLocation = await verifySchoolLocation();
-            $('#locationStatus').innerHTML = `<span class="status-dot good"></span><span>Lokasi terverifikasi · ${verifiedLocation.meters} m · akurasi ${verifiedLocation.accuracy} m</span>`;
+            locationResult = await verifySchoolLocation();
+            $('#locationStatus').innerHTML = locationResult.inside
+                ? `<span class="status-dot good"></span><span>Lokasi terverifikasi · ${locationResult.meters} m · akurasi ${locationResult.accuracy} m</span>`
+                : `<span class="status-dot warning"></span><span>Di luar jangkauan sekolah · absen akan ditolak dan dianggap tidak hadir.</span>`;
+            if (!locationResult.inside) toast('Di luar jangkauan sekolah. Absen akan otomatis ditolak dan dianggap tidak hadir.');
         } catch (error) {
             location = null;
-            $('#locationStatus').innerHTML = '<span class="status-dot warning"></span><span>Absen ditolak karena lokasi tidak valid.</span>';
+            $('#locationStatus').innerHTML = '<span class="status-dot warning"></span><span>Absen ditolak karena lokasi tidak dapat diverifikasi.</span>';
             toast(error.message);
             return;
         }
@@ -382,6 +387,7 @@ renderUserAttendance = async function () {
             loadMine();
         } catch (error) {
             toast(error.message || 'Gagal mengirim foto absen.');
+            loadMine();
         } finally {
             capture.disabled = false;
             capture.textContent = originalText;
@@ -393,10 +399,11 @@ renderUserAttendance = async function () {
             let result = await api('/api/attendance/mine');
             $('#myAttendanceRows').innerHTML = (result.attendance || []).map(row => {
                 let isApproved = row.verification === 'DISETUJUI';
-                let label = isApproved ? 'Disetujui Admin' : row.verification === 'MENUNGGU' ? 'Menunggu Admin' : esc(row.verification);
-                let badgeStyle = isApproved ? 'style="background:var(--green2);color:var(--emerald)"' : '';
+                let isRejected = row.verification === 'DITOLAK';
+                let label = isApproved ? 'Disetujui Admin' : isRejected ? 'Ditolak · Tidak hadir' : row.verification === 'MENUNGGU' ? 'Menunggu Admin' : esc(row.verification);
+                let badgeStyle = isApproved ? 'style="background:var(--green2);color:var(--emerald)"' : isRejected ? 'style="background:rgba(251,113,133,.12);color:var(--red)"' : '';
                 return `<div class="history-row">
-                    <span class="history-check" ${badgeStyle}>${isApproved ? '✓' : '◷'}</span>
+                    <span class="history-check" ${badgeStyle}>${isApproved ? '✓' : isRejected ? '×' : '◷'}</span>
                     <span>
                         <b>${label}</b>
                         <small>${esc(row.day)} · ${new Date(row.capturedAt).toLocaleTimeString('id-ID')}</small>

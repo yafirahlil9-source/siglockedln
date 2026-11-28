@@ -264,7 +264,7 @@ test('encrypted face enrollment, attendance prechecks, manual review, and deleti
     const mismatchAtt = await postAttendance(baseUrl, cookie, intruderDescriptor);
     assert.equal(mismatchAtt.response.status, 403);
 
-    // 6. Reject attendance outside the school radius and with inaccurate GPS
+    // 6. Reject attendance outside the school radius and record it as absent
     const liveOwnerDescriptor = ownerDescriptor.map(v => Number((v + 0.01).toFixed(4)));
     const outsideAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor, {
       latitude: -7.164041847763249,
@@ -272,27 +272,49 @@ test('encrypted face enrollment, attendance prechecks, manual review, and deleti
     });
     assert.equal(outsideAtt.response.status, 403);
     assert.match(outsideAtt.data.error, /Di luar radius sekolah/);
+    assert.match(outsideAtt.data.error, /tidak hadir/);
+    assert.equal(outsideAtt.data.verification, 'DITOLAK');
+    assert.equal(outsideAtt.data.rejectionReason, 'LOKASI');
+    assert.equal(outsideAtt.data.absent, true);
 
-    const inaccurateAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor, {}, 101);
-    assert.equal(inaccurateAtt.response.status, 422);
-
-    const accuracyBoundaryAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor, {}, 100);
-    assert.equal(accuracyBoundaryAtt.response.status, 201, JSON.stringify(accuracyBoundaryAtt.data));
-    assert.equal(accuracyBoundaryAtt.data.verification, 'MENUNGGU');
-
-    // 7. Attendance inside the school radius is recorded for admin review
-    const matchAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor);
-    assert.equal(matchAtt.response.status, 200);
-    assert.equal(matchAtt.data.verification, 'MENUNGGU');
+    const rejectedMine = await api(baseUrl, '/api/attendance/mine', { cookie });
+    assert.equal(rejectedMine.data.attendance.find(row => row.id === outsideAtt.data.id).verification, 'DITOLAK');
 
     const adminLogin = await api(baseUrl, '/api/auth/login', {
       method: 'POST',
       body: { email: adminEmail, password: adminPassword }
     });
     assert.equal(adminLogin.response.status, 200);
+    const adminCookie = sessionCookie(adminLogin.response);
+
+    const rejectedApproval = await api(baseUrl, `/api/admin/attendance/${outsideAtt.data.id}`, {
+      method: 'PATCH',
+      cookie: adminCookie,
+      body: { verification: 'DISETUJUI' }
+    });
+    assert.equal(rejectedApproval.response.status, 409);
+
+    const rejectedReport = await api(baseUrl, '/api/admin/reports', { cookie: adminCookie });
+    assert.equal(rejectedReport.data.attendance.rejectedToday, 1);
+    assert.equal(rejectedReport.data.attendance.approvedToday, 0);
+
+    const inaccurateAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor, {}, 101);
+    assert.equal(inaccurateAtt.response.status, 422);
+    const stillRejectedMine = await api(baseUrl, '/api/attendance/mine', { cookie });
+    assert.equal(stillRejectedMine.data.attendance.find(row => row.id === outsideAtt.data.id).verification, 'DITOLAK');
+
+    // 7. A later attempt from inside the school radius can correct the rejected record
+    const accuracyBoundaryAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor, {}, 100);
+    assert.equal(accuracyBoundaryAtt.response.status, 200, JSON.stringify(accuracyBoundaryAtt.data));
+    assert.equal(accuracyBoundaryAtt.data.verification, 'MENUNGGU');
+
+    const matchAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor);
+    assert.equal(matchAtt.response.status, 200);
+    assert.equal(matchAtt.data.verification, 'MENUNGGU');
+
     const decision = await api(baseUrl, `/api/admin/attendance/${matchAtt.data.id}`, {
       method: 'PATCH',
-      cookie: sessionCookie(adminLogin.response),
+      cookie: adminCookie,
       body: { verification: 'DISETUJUI' }
     });
     assert.equal(decision.response.status, 200);
