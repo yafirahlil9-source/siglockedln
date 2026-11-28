@@ -25,9 +25,9 @@ const seedTasks = [
     { id: 4, title: 'Mini Project Halaman Web', desc: 'Buat halaman profil responsif menggunakan HTML dan CSS.', category: 'Bengkel', subject: 'Pemrograman Web', due: '2026-10-21', status: 'selesai', class: 'XI RPL 1', score: 95 }
 ];
 let currentUser = null, currentPage = 'beranda', taskFilter = 'Semua', taskCategory = 'Semua', searchRole = 'Semua', searchQuery = '', tasks = [], topics = [];
-let learningTab = 'materi';
 let bioText = '', showAverage = true, showRank = true, cameraStream = null, currentPosition = null;
 let notifications = [], adminAccounts = [];
+let optimisticReadNotifIds = new Set(), markAllReadPending = false;
 let availableSubjects = [], teacherSubjects = [], teacherClasses = [], teacherMaterials = [], allMaterials = [];
 let schoolSettings = { latitude: '-7.164041847763249', longitude: '112.64734569558635', radius: 100, open: '06:30', late: '07:15', cutoff: '23:59', alpha: 3 };
 let identityRequests = [];
@@ -464,7 +464,7 @@ function goPage(page, options = {}) {
         cameraStream = null;
     }
     if (page === 'materi' || page === 'tugas') {
-        learningTab = page;
+        options = { ...options, section: page };
         page = 'pembelajaran';
     }
     let adminOnly = ['kehadiran', 'laporan', 'akun', 'kalender', 'aturan', 'pengingat', 'identitas', 'kelas', 'akademik'];
@@ -496,7 +496,7 @@ function goPage(page, options = {}) {
     let f = {
         beranda: renderHome,
         cari: renderSearch,
-        pembelajaran: () => renderLearning(learningTab, options),
+        pembelajaran: () => renderLearning(options),
         profil: renderProfile,
         absen: renderAttendance,
         kehadiran: renderAttendance,
@@ -525,10 +525,11 @@ async function logout() {
     await api('/api/auth/logout', { method: 'POST', body: '{}' }).catch(() => {});
     currentUser = null;
     currentPage = 'beranda';
-    learningTab = 'materi';
     tasks = [];
     topics = [];
     notifications = [];
+    optimisticReadNotifIds.clear();
+    markAllReadPending = false;
     adminAccounts = [];
     availableSubjects = [];
     teacherSubjects = [];
@@ -766,7 +767,7 @@ addTaskForm = function () {
         toast('Belum ada kelas tersedia. Hubungi admin untuk menambahkan kelas.');
         return;
     }
-    const taskContainer = currentPage === 'pembelajaran' ? $('#learningPanel') : $('#pageContent');
+    const taskContainer = currentPage === 'pembelajaran' ? $('#learningTasksSection') : $('#pageContent');
     if (!taskContainer) return;
     taskContainer.insertAdjacentHTML('beforeend', `
         <section class="card task-create-panel" style="margin-top:20px;scroll-margin-top:20px">
@@ -825,7 +826,18 @@ addTaskForm = function () {
         $('#saveTaskBtn').disabled = materials.length === 0;
         if (!materials.length) {
             help.innerHTML = `<div class="form-notice">Belum ada materi untuk ${esc(selectedSubjectName())}. Buat materi terlebih dahulu sebelum membuat tugas. <button class="text-action" type="button" id="createTaskMaterial">Buat materi</button></div>`;
-            $('#createTaskMaterial').onclick = () => goPage('materi', { subjectId: selectedSubjectId() });
+            $('#createTaskMaterial').onclick = () => {
+                if (currentPage === 'pembelajaran') {
+                    renderMaterials(selectedSubjectId()).then(() => {
+                        const card = $('#materialCreateCard');
+                        card?.classList.remove('hidden');
+                        (card || $('#learningMaterialsSection'))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        setTimeout(() => $('#materialTitle')?.focus({ preventScroll: true }), 200);
+                    });
+                } else {
+                    goPage('materi', { subjectId: selectedSubjectId() });
+                }
+            };
         } else {
             help.innerHTML = materials.length === 1
                 ? '<p class="hint">Materi terisi otomatis karena hanya tersedia satu materi.</p>'
@@ -892,71 +904,10 @@ function bindAttendancePhotoFallbacks(container = document) {
     });
 }
 
-function attendanceExportFormHtml(prefix = '') {
-    const key = prefix ? `${prefix}-` : '';
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-    return `<section class="card attendance-export-card">
-        <div class="card-title"><h3>Ekspor laporan kehadiran</h3><small>EXCEL &amp; WORD</small></div>
-        <p class="muted">Pilih periode, kelas, dan status. Laporan berisi waktu, jarak dari titik sekolah, serta akurasi GPS.</p>
-        <div class="export-filter-grid">
-            <div><label class="field-label" for="${key}exportStartDate">Tanggal mulai</label><input class="field" id="${key}exportStartDate" type="date" value="${today.slice(0, 8)}01" max="${today}" required></div>
-            <div><label class="field-label" for="${key}exportEndDate">Tanggal akhir</label><input class="field" id="${key}exportEndDate" type="date" value="${today}" max="${today}" required></div>
-            <div><label class="field-label" for="${key}exportClass">Kelas</label><select class="field" id="${key}exportClass"><option value="">Semua kelas</option></select></div>
-            <div><label class="field-label" for="${key}exportStatus">Status</label><select class="field" id="${key}exportStatus"><option value="">Semua status</option><option value="DISETUJUI">Disetujui</option><option value="MENUNGGU">Menunggu</option><option value="DITOLAK">Ditolak</option></select></div>
-        </div>
-        <div class="export-actions"><button class="btn btn-primary" type="button" data-attendance-export="xlsx">Unduh Excel (.xlsx)</button><button class="btn btn-outline" type="button" data-attendance-export="doc">Unduh Word (.doc)</button></div>
-    </section>`;
-}
-
-function bindAttendanceExportForm(prefix = '') {
-    const key = prefix ? `${prefix}-` : '';
-    const classSelect = $(`#${key}exportClass`);
-    api('/api/classes').then(result => {
-        classSelect.innerHTML = '<option value="">Semua kelas</option>' + (result.classes || []).map(cls => `<option value="${esc(cls.name)}">${esc(cls.name)}</option>`).join('');
-    }).catch(() => {});
-    $$(`[data-attendance-export]`).filter(button => $(`#${key}exportStartDate`)?.closest('section').contains(button)).forEach(button => button.onclick = async () => {
-        const startDate = $(`#${key}exportStartDate`).value;
-        const endDate = $(`#${key}exportEndDate`).value;
-        if (!startDate || !endDate || startDate > endDate) return toast('Rentang tanggal laporan tidak valid.');
-        const params = new URLSearchParams({ startDate, endDate, format: button.dataset.attendanceExport });
-        const className = $(`#${key}exportClass`).value;
-        const status = $(`#${key}exportStatus`).value;
-        if (className) params.set('className', className);
-        if (status) params.set('status', status);
-        button.disabled = true;
-        const originalText = button.textContent;
-        button.textContent = 'Menyiapkan laporan...';
-        try {
-            const response = await fetch(`/api/admin/attendance/export?${params}`, { credentials: 'same-origin' });
-            if (!response.ok) {
-                const error = await response.json().catch(() => ({}));
-                throw new Error(error.error || 'Laporan gagal dibuat.');
-            }
-            const blob = await response.blob();
-            const disposition = response.headers.get('Content-Disposition') || '';
-            const fileName = disposition.match(/filename="?([^";]+)"?/i)?.[1] || `laporan-kehadiran-${startDate}-${endDate}.${button.dataset.attendanceExport}`;
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = fileName;
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 1000);
-            toast('Laporan kehadiran berhasil diunduh.');
-        } catch (error) {
-            toast(error.message);
-        } finally {
-            button.disabled = false;
-            button.textContent = originalText;
-        }
-    });
-}
-
 renderAttendance = function () {
     if (currentUser.role !== 'admin') return renderUserAttendance();
     $('#pageContent').innerHTML = heading('PENGELOLAAN SEKOLAH', 'Foto Kehadiran Siswa', 'Periksa foto, lokasi, dan catatan siswa sebelum menyetujui kehadiran.') +
-    attendanceExportFormHtml() + `<section class="card" style="margin-top:18px">
+    `<section class="card">
         <div class="card-title">
             <h3>Daftar Kehadiran Siswa (Verifikasi Admin)</h3>
             <button class="btn btn-outline" id="reloadAttendance">Muat ulang</button>
@@ -1038,7 +989,6 @@ renderAttendance = function () {
         }
     };
 
-    bindAttendanceExportForm();
     $('#reloadAttendance').onclick = load;
     load();
 };
@@ -1173,36 +1123,19 @@ async function renderAcademicAdmin() {
     });
 }
 
-function renderLearning(tab = 'materi', options = {}) {
-    learningTab = tab === 'tugas' ? 'tugas' : 'materi';
-    const tabs = [['materi', 'Materi'], ['tugas', 'Tugas']];
+function renderLearning(options = {}) {
     $('#pageContent').innerHTML = heading('PUSAT PEMBELAJARAN', 'Materi & Tugas', 'Baca materi dan kelola tugas dalam satu halaman.') + `
-        <div class="learning-tabs" role="tablist" aria-label="Materi dan tugas">
-            ${tabs.map(([id, label]) => `<button type="button" id="learning-tab-${id}" class="filter-chip learning-tab ${learningTab === id ? 'active' : ''}" role="tab" aria-selected="${learningTab === id}" aria-controls="learningPanel" tabindex="${learningTab === id ? '0' : '-1'}" data-learning-tab="${id}">${label}</button>`).join('')}
-        </div>
-        <div id="learningPanel" role="tabpanel" aria-labelledby="learning-tab-${learningTab}" tabindex="0">
-            <div class="empty-state">Memuat ${learningTab === 'materi' ? 'materi' : 'tugas'}...</div>
-        </div>`;
-    const activateTab = (next, moveFocus = false) => {
-        if (next === learningTab) return;
-        renderLearning(next);
-        if (moveFocus) requestAnimationFrame(() => $(`[data-learning-tab="${next}"]`)?.focus());
-    };
-    $$('[data-learning-tab]').forEach(button => {
-        button.onclick = event => {
-            event.preventDefault();
-            activateTab(button.dataset.learningTab);
-        };
-        button.onkeydown = event => {
-            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-            event.preventDefault();
-            const index = tabs.findIndex(([id]) => id === learningTab);
-            const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
-            activateTab(tabs[nextIndex][0], true);
-        };
+        <section id="learningMaterialsSection" class="learning-section"></section>
+        <section id="learningTasksSection" class="learning-section"></section>`;
+    Promise.all([
+        renderMaterials(options.subjectId || ''),
+        Promise.resolve(renderTasks())
+    ]).then(() => {
+        const sectionId = options.section === 'tugas' ? '#learningTasksSection' : options.section === 'materi' ? '#learningMaterialsSection' : '';
+        if (sectionId) {
+            $(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
     });
-    if (learningTab === 'materi') renderMaterials(options.subjectId || '');
-    else renderTasks();
 }
 
 async function renderMaterials(preferredSubjectId = '') {
@@ -1211,7 +1144,7 @@ async function renderMaterials(preferredSubjectId = '') {
     const isAdmin = canAddSubject;
     const filterId = preferredSubjectId === '' ? 'Semua' : Number(preferredSubjectId);
     const embedded = currentPage === 'pembelajaran';
-    const target = embedded ? $('#learningPanel') : $('#pageContent');
+    const target = embedded ? $('#learningMaterialsSection') : $('#pageContent');
     if (!target) return;
     const action = (canCreate || canAddSubject) ? `<button class="btn btn-primary" id="openMaterialCreate">+ ${canAddSubject ? 'Tambah mapel' : 'Tambah materi'}</button>` : '';
     const pageHeading = heading('PUSAT PEMBELAJARAN', 'Materi pembelajaran', 'Baca materi, buka tautan, dan unduh berkas yang dibagikan guru.', action);
@@ -1334,6 +1267,7 @@ async function renderMaterials(preferredSubjectId = '') {
             allMaterials = teaching.materials || [];
             toast('Materi berhasil disimpan.');
             await renderMaterials(subjectId);
+            $('#newSubject')?.dispatchEvent(new Event('change'));
         } catch (error) {
             button.disabled = false;
             button.textContent = 'Simpan materi';
@@ -1350,6 +1284,7 @@ async function renderMaterials(preferredSubjectId = '') {
             teacherMaterials = teacherMaterials.filter(material => material.id !== button.dataset.deleteMaterial);
             toast('Materi berhasil dihapus.');
             renderMaterials(filterId);
+            $('#newSubject')?.dispatchEvent(new Event('change'));
         } catch (error) {
             button.disabled = false;
             toast(error.message);
@@ -1461,7 +1396,7 @@ function renderTasks() {
     let isStudent = currentUser.role === 'siswa';
     let isTeacher = currentUser.role === 'guru';
     const embedded = currentPage === 'pembelajaran';
-    const target = embedded ? $('#learningPanel') : $('#pageContent');
+    const target = embedded ? $('#learningTasksSection') : $('#pageContent');
     if (!target) return;
     const pageHeading = heading('PUSAT PEMBELAJARAN', 'Tugas & penilaian', 'Pantau tugas, tenggat, dan perkembangan belajarmu.', action);
     const panelHeading = `<div class="card-title learning-section-heading"><h3>Tugas & penilaian</h3>${action}</div>`;
@@ -1690,7 +1625,7 @@ function openSubmitTaskModal(taskId) {
             let updated = await api('/api/assignments');
             if (updated.availableClasses) window.availableClasses = updated.availableClasses;
             tasks = (updated.assignments || []).map(mapAssignment);
-            if (currentPage === 'tugas' || (currentPage === 'pembelajaran' && learningTab === 'tugas')) renderTasks();
+            if (currentPage === 'tugas' || currentPage === 'pembelajaran') renderTasks();
         } catch (err) {
             toast(err.message);
             btn.disabled = false;
@@ -1827,7 +1762,7 @@ async function openSubmissionsModal(taskId) {
                     });
                     toast('Nilai dan catatan berhasil disimpan!');
                     if (modal.isConnected && modal.open) openSubmissionsModal(taskId);
-                    if (currentPage === 'tugas' || (currentPage === 'pembelajaran' && learningTab === 'tugas')) {
+                    if (currentPage === 'tugas' || currentPage === 'pembelajaran') {
                         let updated = await api('/api/assignments');
                         if (updated.availableClasses) window.availableClasses = updated.availableClasses;
                         tasks = (updated.assignments || []).map(mapAssignment);
@@ -1890,69 +1825,72 @@ async function renderReports() {
                 ].map(([s, n]) => `<div style="display:flex;justify-content:space-between;padding:15px 0;border-bottom:1px solid var(--line);font-size:12px"><span>${esc(s)}</span><b>${esc(n)}</b></div>`).join('')}
             </section>
         </div>
-        <div style="margin-top:18px">${attendanceExportFormHtml('reports')}</div>
         <div class="card" style="margin-top:18px">
-            <div class="card-title"><h3>Ekspor ringkasan</h3><small>DOKUMEN RESMI DB</small></div>
-            <p class="muted">Unduh data ringkasan real-time dari database sekolah_hub sebagai file dokumen (.doc) yang bisa langsung dibuka di Microsoft Word atau Google Docs.</p>
-            <button class="btn btn-primary" id="exportReport">↓ Unduh laporan Dokumen</button>
+            <div class="card-title"><h3>Ekspor ringkasan</h3><small>EXCEL &amp; WORD</small></div>
+            <p class="muted">Unduh data ringkasan real-time dari database sekolah_hub sebagai file Excel (.xlsx) atau dokumen Word (.doc).</p>
+            <div class="export-actions">
+                <button class="btn btn-primary" type="button" data-report-export="xlsx">↓ Unduh Excel (.xlsx)</button>
+                <button class="btn btn-outline" type="button" data-report-export="doc">↓ Unduh Word (.doc)</button>
+            </div>
         </div>`;
 
-    bindAttendanceExportForm('reports');
-    $('#exportReport').onclick = () => {
-        const tanggal = new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-        const rows = [
-            ...attCounts.map(c => ['Kehadiran Hari Ini', c.s, `${c.n} siswa`]),
-            ['Kehadiran Total', 'Semua Riwayat Absensi', `${report.attendance.totalRecords} catatan`],
-            ['Tugas', 'Aktif (Belum Tenggat)', `${report.assignments.active} tugas`],
-            ['Tugas', 'Lewat Tenggat', `${report.assignments.overdue} tugas`],
-            ['Tugas', 'Pengumpulan Dinilai', `${report.assignments.graded} dari ${report.assignments.submissions}`],
-            ['Warga Sekolah', 'Siswa / Guru / Staf Aktif', `${report.users.students} / ${report.users.teachers} / ${report.users.staff}`],
-            ['Biometrik', 'Wajah Terdaftar', `${report.users.faceRegistered} akun`],
-            ['Komunitas', 'Topik & Komentar', `${report.community.posts} topik, ${report.community.comments} komentar`]
-        ];
-        const docHtml = `<!DOCTYPE html>
-<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" lang="id">
-<head><meta charset="utf-8"><title>Laporan Sekolah Siglockedin</title>
-<style>
-  body { font-family: Calibri, Arial, sans-serif; color: #1f2937; padding: 24px; }
-  h1 { font-size: 20px; margin: 0 0 4px; color: #064e3b; }
-  p.meta { font-size: 12px; color: #6b7280; margin: 0 0 18px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-  th, td { border: 1px solid #d1d5db; padding: 9px 12px; text-align: left; font-size: 13px; }
-  th { background: #ecfdf5; color: #065f46; font-weight: bold; }
-</style></head>
-<body>
-  <h1>Laporan Ringkasan Sekolah — Siglockedin</h1>
-  <p class="meta">Sumber: Database sekolah_hub · Tanggal cetak: ${esc(tanggal)} · Dicetak oleh: ${esc(currentUser?.name || 'Admin')}</p>
-  <table>
-    <thead><tr><th>Jenis</th><th>Kategori</th><th>Jumlah / Keterangan</th></tr></thead>
-    <tbody>${rows.map(([jenis, kat, jml]) => `<tr><td>${esc(jenis)}</td><td>${esc(kat)}</td><td>${esc(jml)}</td></tr>`).join('')}</tbody>
-  </table>
-</body></html>`;
-        const url = URL.createObjectURL(new Blob(['\ufeff' + docHtml], { type: 'application/msword;charset=utf-8' }));
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `laporan-siglockedin-${report.today}.doc`;
-        a.click();
-        URL.revokeObjectURL(url);
-        toast('Laporan dokumen (.doc) berhasil diunduh.');
-    };
+    $$('[data-report-export]').forEach(button => button.onclick = async () => {
+        const format = button.dataset.reportExport;
+        button.disabled = true;
+        const originalText = button.textContent;
+        button.textContent = 'Menyiapkan laporan...';
+        try {
+            const response = await fetch(`/api/admin/reports/export?format=${encodeURIComponent(format)}`, { credentials: 'same-origin' });
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || 'Laporan gagal dibuat.');
+            }
+            const blob = await response.blob();
+            const disposition = response.headers.get('Content-Disposition') || '';
+            const fileName = disposition.match(/filename="?([^";]+)"?/i)?.[1] || `laporan-ringkasan-${report.today}.${format}`;
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            toast(`Laporan ${format === 'xlsx' ? 'Excel (.xlsx)' : 'Word (.doc)'} berhasil diunduh.`);
+        } catch (err) {
+            toast(err.message || 'Gagal mengunduh laporan.');
+        } finally {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    });
 }
 
 async function fetchNotifications() {
     try {
         const res = await api('/api/notifications');
-        notifications = (res.notifications || []).map(n => ({
-            id: n.id,
-            title: n.title,
-            message: n.message,
-            time: n.createdAt ? new Date(n.createdAt).getTime() : Date.now(),
-            read: Boolean(n.isRead)
-        }));
+        notifications = (res.notifications || []).map(n => {
+            const id = String(n.id);
+            const serverRead = Boolean(n.isRead);
+            if (serverRead) optimisticReadNotifIds.delete(id);
+            return {
+                id: n.id,
+                title: n.title,
+                message: n.message,
+                time: n.createdAt ? new Date(n.createdAt).getTime() : Date.now(),
+                read: serverRead || markAllReadPending || optimisticReadNotifIds.has(id)
+            };
+        });
         updateNotificationBadge();
     } catch (_) {}
 }
-function updateNotificationBadge() { let unread = notifications.filter(n => !n.read).length; $('#notificationBtn').classList.toggle('has-unread', unread > 0); $('#notificationBtn').setAttribute('aria-label', unread ? `${unread} notifikasi belum dibaca` : 'Buka notifikasi') }
+function updateNotificationBadge() {
+    const btn = $('#notificationBtn');
+    if (!btn) return;
+    const unread = notifications.filter(n => !n.read).length;
+    btn.classList.toggle('has-unread', unread > 0);
+    btn.setAttribute('aria-label', unread ? `${unread} notifikasi belum dibaca` : 'Buka notifikasi');
+}
 function addAdminShortcuts() { let shortcuts = [['akun', 'Pengelolaan akun', 'Aktivasi akun dan impor data'], ['kalender', 'Kalender sekolah', 'Atur hari efektif dan agenda'], ['aturan', 'Aturan kehadiran', 'Jam, radius GPS, dan batas alpha'], ['pengingat', 'Pengingat kehadiran', 'Warga yang belum absen'], ['identitas', 'Permintaan buka identitas', 'Tinjau permintaan dan riwayat']]; $('#pageContent').insertAdjacentHTML('beforeend', `<section class="admin-shortcuts"><div class="section-heading"><div><span class="eyebrow">PENGELOLAAN SEKOLAH</span><h2>Menu admin</h2></div></div><div class="shortcut-grid">${shortcuts.map(([id, title, desc]) => `<button class="shortcut-link" data-admin-page="${id}"><span><b>${title}</b><small>${desc}</small></span><strong>↗</strong></button>`).join('')}</div></section>`); $$('[data-admin-page]').forEach(button => button.onclick = () => goPage(button.dataset.adminPage)) }
 function resolveNotificationTarget(n) {
     const text = `${n.title || ''} ${n.message || ''}`.toLowerCase();
@@ -1973,24 +1911,35 @@ async function renderNotifications() {
             return `<article class="notification-item ${n.read ? '' : 'unread'}" data-notif-id="${esc(n.id)}" data-notif-target="${esc(target)}" style="cursor:pointer"><span class="notification-mark">✳</span><div><b>${esc(n.title)}</b><p>${esc(n.message)}</p><small>${ago(n.time)} · Klik untuk buka halaman →</small></div>${n.read ? '' : '<span class="unread-dot"></span>'}</article>`;
         }).join('') || '<div class="empty-state">Belum ada notifikasi.</div>'}</section>`;
     $('#readAllNotifications').onclick = async () => {
+        markAllReadPending = true;
+        notifications = notifications.map(n => ({ ...n, read: true }));
+        updateNotificationBadge();
         try {
             await api('/api/notifications/read-all', { method: 'PATCH' });
-            notifications = notifications.map(n => ({ ...n, read: true }));
-            renderNotifications();
-            updateNotificationBadge();
+            optimisticReadNotifIds.clear();
+            markAllReadPending = false;
+            await renderNotifications();
         } catch (err) {
+            markAllReadPending = false;
+            await fetchNotifications();
+            renderNotifications();
             toast(err.message || 'Gagal menandai notifikasi.');
         }
     };
     $$('.notification-item[data-notif-id]').forEach(el => {
-        el.onclick = async () => {
-            const id = el.dataset.notifId;
+        el.onclick = () => {
+            const id = String(el.dataset.notifId);
             const targetPage = el.dataset.notifTarget || 'beranda';
-            const target = notifications.find(n => String(n.id) === String(id));
+            const target = notifications.find(n => String(n.id) === id);
             if (target && !target.read) {
                 target.read = true;
+                optimisticReadNotifIds.add(id);
                 updateNotificationBadge();
-                api(`/api/notifications/${encodeURIComponent(id)}/read`, { method: 'PATCH' }).catch(() => {});
+                api(`/api/notifications/${encodeURIComponent(id)}/read`, { method: 'PATCH' }).catch(() => {
+                    optimisticReadNotifIds.delete(id);
+                    target.read = false;
+                    updateNotificationBadge();
+                });
             }
             goPage(targetPage);
         };

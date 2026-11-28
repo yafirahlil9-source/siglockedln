@@ -2053,67 +2053,129 @@ app.get('/api/admin/attendance/export', requireActiveUser, requireAdmin, async (
 	}
 });
 
+async function fetchAdminReportSummary(db) {
+	const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+	const [usersRow, attTodayRows, attAllRow, tasksRow, subsRow, postsRow, commentsRow] = await Promise.all([
+		db.get(`SELECT
+			COUNT(*) AS totalUsers,
+			SUM(CASE WHEN role='SISWA' AND status='AKTIF' THEN 1 ELSE 0 END) AS activeStudents,
+			SUM(CASE WHEN role='GURU' AND status='AKTIF' THEN 1 ELSE 0 END) AS activeTeachers,
+			SUM(CASE WHEN role='STAF' AND status='AKTIF' THEN 1 ELSE 0 END) AS activeStaff,
+			SUM(CASE WHEN face_descriptor IS NOT NULL THEN 1 ELSE 0 END) AS faceRegistered
+			FROM pengguna`),
+		db.all('SELECT verification, COUNT(*) AS total FROM kehadiran WHERE day=? GROUP BY verification', today),
+		db.get('SELECT COUNT(*) AS total FROM kehadiran'),
+		db.get(`SELECT
+			COUNT(*) AS totalTasks,
+			SUM(CASE WHEN due_at >= NOW() THEN 1 ELSE 0 END) AS activeTasks,
+			SUM(CASE WHEN due_at < NOW() THEN 1 ELSE 0 END) AS overdueTasks
+			FROM tugas`),
+		db.get('SELECT COUNT(*) AS totalSubmissions, SUM(CASE WHEN score IS NOT NULL THEN 1 ELSE 0 END) AS gradedSubmissions FROM pengumpulan'),
+		db.get('SELECT COUNT(*) AS totalPosts FROM postingan'),
+		db.get('SELECT COUNT(*) AS totalComments FROM komentar')
+	]);
+
+	const attMap = { DISETUJUI: 0, MENUNGGU: 0, DITOLAK: 0 };
+	for (const r of attTodayRows) {
+		if (r.verification in attMap) attMap[r.verification] = Number(r.total || 0);
+	}
+	const activeStudents = Number(usersRow?.activeStudents || 0);
+	const recordedToday = attMap.DISETUJUI + attMap.MENUNGGU + attMap.DITOLAK;
+	const notYetToday = Math.max(0, activeStudents - recordedToday);
+
+	return {
+		today,
+		users: {
+			total: Number(usersRow?.totalUsers || 0),
+			students: activeStudents,
+			teachers: Number(usersRow?.activeTeachers || 0),
+			staff: Number(usersRow?.activeStaff || 0),
+			faceRegistered: Number(usersRow?.faceRegistered || 0)
+		},
+		attendance: {
+			approvedToday: attMap.DISETUJUI,
+			pendingToday: attMap.MENUNGGU,
+			rejectedToday: attMap.DITOLAK,
+			notYetToday,
+			totalRecords: Number(attAllRow?.total || 0)
+		},
+		assignments: {
+			total: Number(tasksRow?.totalTasks || 0),
+			active: Number(tasksRow?.activeTasks || 0),
+			overdue: Number(tasksRow?.overdueTasks || 0),
+			submissions: Number(subsRow?.totalSubmissions || 0),
+			graded: Number(subsRow?.gradedSubmissions || 0)
+		},
+		community: {
+			posts: Number(postsRow?.totalPosts || 0),
+			comments: Number(commentsRow?.totalComments || 0)
+		}
+	};
+}
+
 app.get('/api/admin/reports', requireActiveUser, requireAdmin, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+		res.json(await fetchAdminReportSummary(db));
+	} catch (error) {
+		next(error);
+	}
+});
 
-		const [usersRow, attTodayRows, attAllRow, tasksRow, subsRow, postsRow, commentsRow] = await Promise.all([
-			db.get(`SELECT
-				COUNT(*) AS totalUsers,
-				SUM(CASE WHEN role='SISWA' AND status='AKTIF' THEN 1 ELSE 0 END) AS activeStudents,
-				SUM(CASE WHEN role='GURU' AND status='AKTIF' THEN 1 ELSE 0 END) AS activeTeachers,
-				SUM(CASE WHEN role='STAF' AND status='AKTIF' THEN 1 ELSE 0 END) AS activeStaff,
-				SUM(CASE WHEN face_descriptor IS NOT NULL THEN 1 ELSE 0 END) AS faceRegistered
-				FROM pengguna`),
-			db.all('SELECT verification, COUNT(*) AS total FROM kehadiran WHERE day=? GROUP BY verification', today),
-			db.get('SELECT COUNT(*) AS total FROM kehadiran'),
-			db.get(`SELECT
-				COUNT(*) AS totalTasks,
-				SUM(CASE WHEN due_at >= NOW() THEN 1 ELSE 0 END) AS activeTasks,
-				SUM(CASE WHEN due_at < NOW() THEN 1 ELSE 0 END) AS overdueTasks
-				FROM tugas`),
-			db.get('SELECT COUNT(*) AS totalSubmissions, SUM(CASE WHEN score IS NOT NULL THEN 1 ELSE 0 END) AS gradedSubmissions FROM pengumpulan'),
-			db.get('SELECT COUNT(*) AS totalPosts FROM postingan'),
-			db.get('SELECT COUNT(*) AS totalComments FROM komentar')
-		]);
-
-		const attMap = { DISETUJUI: 0, MENUNGGU: 0, DITOLAK: 0 };
-		for (const r of attTodayRows) {
-			if (r.verification in attMap) attMap[r.verification] = Number(r.total || 0);
+app.get('/api/admin/reports/export', requireActiveUser, requireAdmin, async (req, res, next) => {
+	try {
+		const format = String(req.query.format || 'xlsx').toLowerCase();
+		if (!['xlsx', 'doc'].includes(format)) {
+			return res.status(422).json({ error: 'Format laporan harus xlsx atau doc.' });
 		}
-		const activeStudents = Number(usersRow?.activeStudents || 0);
-		const recordedToday = attMap.DISETUJUI + attMap.MENUNGGU + attMap.DITOLAK;
-		const notYetToday = Math.max(0, activeStudents - recordedToday);
+		const db = await databasePromise;
+		const report = await fetchAdminReportSummary(db);
+		const attPct = report.users.students ? Math.round((report.attendance.approvedToday / Math.max(report.users.students, 1)) * 100) : 0;
+		const generatedAt = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'long', timeStyle: 'short' }).format(new Date());
+		const fileBase = `laporan-ringkasan-${report.today}`;
+		const headers = ['Jenis', 'Kategori', 'Jumlah / Keterangan'];
+		const rows = [
+			['Kehadiran Hari Ini', 'Persentase Kehadiran', `${attPct}% (${report.attendance.approvedToday} / ${report.users.students} siswa aktif)`],
+			['Kehadiran Hari Ini', 'Hadir / Disetujui', `${report.attendance.approvedToday} siswa`],
+			['Kehadiran Hari Ini', 'Menunggu Verifikasi', `${report.attendance.pendingToday} siswa`],
+			['Kehadiran Hari Ini', 'Ditolak', `${report.attendance.rejectedToday} siswa`],
+			['Kehadiran Hari Ini', 'Belum Absen Hari Ini', `${report.attendance.notYetToday} siswa`],
+			['Kehadiran Total', 'Semua Riwayat Absensi', `${report.attendance.totalRecords} catatan`],
+			['Tugas', 'Total Tugas Tercatat', `${report.assignments.total} tugas`],
+			['Tugas', 'Aktif (Belum Tenggat)', `${report.assignments.active} tugas`],
+			['Tugas', 'Lewat Tenggat', `${report.assignments.overdue} tugas`],
+			['Tugas', 'Pengumpulan Dinilai', `${report.assignments.graded} dari ${report.assignments.submissions}`],
+			['Warga Sekolah', 'Siswa / Guru / Staf Aktif', `${report.users.students} / ${report.users.teachers} / ${report.users.staff}`],
+			['Biometrik', 'Wajah Terdaftar', `${report.users.faceRegistered} akun`],
+			['Komunitas', 'Topik & Komentar', `${report.community.posts} topik, ${report.community.comments} komentar`]
+		];
 
-		res.json({
-			today,
-			users: {
-				total: Number(usersRow?.totalUsers || 0),
-				students: activeStudents,
-				teachers: Number(usersRow?.activeTeachers || 0),
-				staff: Number(usersRow?.activeStaff || 0),
-				faceRegistered: Number(usersRow?.faceRegistered || 0)
-			},
-			attendance: {
-				approvedToday: attMap.DISETUJUI,
-				pendingToday: attMap.MENUNGGU,
-				rejectedToday: attMap.DITOLAK,
-				notYetToday,
-				totalRecords: Number(attAllRow?.total || 0)
-			},
-			assignments: {
-				total: Number(tasksRow?.totalTasks || 0),
-				active: Number(tasksRow?.activeTasks || 0),
-				overdue: Number(tasksRow?.overdueTasks || 0),
-				submissions: Number(subsRow?.totalSubmissions || 0),
-				graded: Number(subsRow?.gradedSubmissions || 0)
-			},
-			community: {
-				posts: Number(postsRow?.totalPosts || 0),
-				comments: Number(commentsRow?.totalComments || 0)
+		if (format === 'xlsx') {
+			const workbook = new ExcelJS.Workbook();
+			workbook.creator = 'Siglockedin';
+			workbook.created = new Date();
+			const sheet = workbook.addWorksheet('Ringkasan Sekolah');
+			sheet.columns = [{ width: 24 }, { width: 32 }, { width: 38 }];
+			sheet.addRow(['Laporan Ringkasan Sekolah', 'Siglockedin', generatedAt]);
+			sheet.getRow(1).font = { bold: true, size: 13, color: { argb: 'FF065F46' } };
+			sheet.addRow([]);
+			sheet.addRow(headers);
+			const headerRow = sheet.getRow(3);
+			headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+			headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF047857' } };
+			for (const values of rows) {
+				sheet.addRow(values.map(value => typeof value === 'string' && /^[=+\-@]/.test(value) ? `'${value}` : value));
 			}
-		});
+			const buffer = await workbook.xlsx.writeBuffer();
+			res.set('Cache-Control', 'private, no-store');
+			return res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').attachment(`${fileBase}.xlsx`).send(Buffer.from(buffer));
+		}
+
+		const tableRows = rows.map(values => `<tr>${values.map(value => `<td>${htmlEscape(value)}</td>`).join('')}</tr>`).join('');
+		const docHtml = `<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" lang="id"><head><meta charset="utf-8"><title>Laporan Ringkasan Sekolah — Siglockedin</title><style>body{font-family:Calibri,Arial,sans-serif;color:#1f2937;padding:24px}h1{font-size:20px;margin:0 0 4px;color:#064e3b}p.meta{font-size:12px;color:#6b7280;margin:0 0 18px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #d1d5db;padding:9px 12px;text-align:left;font-size:13px}th{background:#ecfdf5;color:#065f46;font-weight:bold}</style></head><body><h1>Laporan Ringkasan Sekolah — Siglockedin</h1><p class="meta">Sumber: Database sekolah_hub · Tanggal laporan: ${htmlEscape(report.today)} · Dibuat: ${htmlEscape(generatedAt)} · Dicetak oleh: ${htmlEscape(req.user?.name || 'Admin')}</p><table><thead><tr>${headers.map(h => `<th>${htmlEscape(h)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table></body></html>`;
+		res.set('Cache-Control', 'private, no-store');
+		return res.type('application/msword;charset=utf-8').attachment(`${fileBase}.doc`).send('\ufeff' + docHtml);
 	} catch (error) {
 		next(error);
 	}

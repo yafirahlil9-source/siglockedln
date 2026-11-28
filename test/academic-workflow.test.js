@@ -460,6 +460,22 @@ test('academic administration, materials, tasks, attendance exports, and photo M
     assert.match(exportResponse.headers.get('content-type'), /msword/);
     assert.match(await exportResponse.text(), /Laporan Kehadiran/);
 
+    let summaryExport = await fetch(`${server.baseUrl}/api/admin/reports/export?format=xlsx`, { headers: { Cookie: admin.cookie } });
+    assert.equal(summaryExport.status, 200);
+    assert.match(summaryExport.headers.get('content-type'), /spreadsheetml/);
+    const summaryBook = new ExcelJS.Workbook();
+    await summaryBook.xlsx.load(Buffer.from(await summaryExport.arrayBuffer()));
+    assert.deepEqual(summaryBook.worksheets.map(sheet => sheet.name), ['Ringkasan Sekolah']);
+    assert.ok(summaryBook.getWorksheet('Ringkasan Sekolah').rowCount >= 14);
+
+    summaryExport = await fetch(`${server.baseUrl}/api/admin/reports/export?format=doc`, { headers: { Cookie: admin.cookie } });
+    assert.equal(summaryExport.status, 200);
+    assert.match(summaryExport.headers.get('content-type'), /msword/);
+    assert.match(await summaryExport.text(), /Laporan Ringkasan Sekolah/);
+
+    summaryExport = await fetch(`${server.baseUrl}/api/admin/reports/export?format=pdf`, { headers: { Cookie: admin.cookie } });
+    assert.equal(summaryExport.status, 422);
+
     let photoResponse = await fetch(`${server.baseUrl}/api/attendance/${photoIds[0]}/photo`, { headers: { Cookie: admin.cookie } });
     assert.equal(photoResponse.status, 200);
     assert.equal(photoResponse.headers.get('content-type'), 'image/png');
