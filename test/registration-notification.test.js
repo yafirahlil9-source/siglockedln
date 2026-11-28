@@ -102,6 +102,35 @@ test('new registration creates an admin notification that can be read', { timeou
     assert.equal(result.response.status, 200);
     const adminCookie = sessionCookie(result.response);
 
+    result = await api(baseUrl, '/api/attendance/settings', { cookie: adminCookie });
+    assert.equal(result.response.status, 200);
+    assert.equal(Number(result.data.settings.latitude), -7.164041847763249);
+    assert.equal(Number(result.data.settings.longitude), 112.64734569558635);
+    assert.equal(Number(result.data.settings.radiusMeters), 100);
+
+    const updatedSettings = {
+      latitude: -7.164,
+      longitude: 112.647,
+      radiusMeters: 75,
+      openTime: '07:00',
+      closeTime: '17:00',
+      lateAfter: '07:30'
+    };
+    result = await api(baseUrl, '/api/admin/attendance/settings', {
+      method: 'PUT', cookie: adminCookie, body: updatedSettings
+    });
+    assert.equal(result.response.status, 200);
+    result = await api(baseUrl, '/api/attendance/settings', { cookie: adminCookie });
+    assert.equal(Number(result.data.settings.latitude), updatedSettings.latitude);
+    assert.equal(Number(result.data.settings.longitude), updatedSettings.longitude);
+    assert.equal(Number(result.data.settings.radiusMeters), updatedSettings.radiusMeters);
+    assert.equal(result.data.settings.closeTime, updatedSettings.closeTime);
+
+    result = await api(baseUrl, '/api/admin/attendance/settings', {
+      method: 'PUT', cookie: adminCookie, body: { ...updatedSettings, radiusMeters: 10 }
+    });
+    assert.equal(result.response.status, 422);
+
     result = await api(baseUrl, '/api/auth/register', {
       method: 'POST',
       body: {
@@ -212,17 +241,17 @@ test('accounts auto-activate by default', { timeout: 30000 }, async () => {
     });
     assert.equal(secondRegistration.response.status, 201);
     const scoreDb = await mysql.createConnection({ ...mysqlConfig, database: databaseName });
-    const [[admin]] = await scoreDb.execute('SELECT id FROM users WHERE email=?', [adminEmail]);
-    const [[secondStudent]] = await scoreDb.execute('SELECT id FROM users WHERE email=?', [secondStudentEmail]);
+    const [[admin]] = await scoreDb.execute('SELECT id FROM pengguna WHERE email=?', [adminEmail]);
+    const [[secondStudent]] = await scoreDb.execute('SELECT id FROM pengguna WHERE email=?', [secondStudentEmail]);
     assert.ok(admin);
     assert.ok(secondStudent);
     const assignmentOne = crypto.randomUUID(), assignmentTwo = crypto.randomUUID();
     const dueAt = new Date(Date.now() + 86400000).toISOString();
     try {
-      const insertAssignment = 'INSERT INTO assignments (id,title,instructions,subject,class_name,due_at,max_score,created_by) VALUES (?,?,?,?,?,?,?,?)';
+      const insertAssignment = 'INSERT INTO tugas (id,title,instructions,subject,class_name,due_at,max_score,created_by) VALUES (?,?,?,?,?,?,?,?)';
       await scoreDb.execute(insertAssignment, [assignmentOne, 'Tes Nilai Satu', 'Instruksi tes satu.', 'Matematika', 'X IPA 2', dueAt, 100, admin.id]);
       await scoreDb.execute(insertAssignment, [assignmentTwo, 'Tes Nilai Dua', 'Instruksi tes dua.', 'Matematika', 'X IPA 2', dueAt, 200, admin.id]);
-      const insertSubmission = 'INSERT INTO submissions (id,assignment_id,student_id,answer_text,score,feedback) VALUES (?,?,?,?,?,?)';
+      const insertSubmission = 'INSERT INTO pengumpulan (id,assignment_id,student_id,answer_text,score,feedback) VALUES (?,?,?,?,?,?)';
       await scoreDb.execute(insertSubmission, [crypto.randomUUID(), assignmentOne, login.data.user.id, 'Jawaban siswa.', 80, '']);
       await scoreDb.execute(insertSubmission, [crypto.randomUUID(), assignmentTwo, login.data.user.id, 'Jawaban siswa.', 160, '']);
       await scoreDb.execute(insertSubmission, [crypto.randomUUID(), assignmentOne, secondStudent.id, 'Jawaban siswa.', 90, '']);
@@ -232,6 +261,7 @@ test('accounts auto-activate by default', { timeout: 30000 }, async () => {
     }
 
     const ownMetrics = await api(baseUrl, `/api/search/${login.data.user.id}/profile`, { cookie: studentCookie });
+    assert.equal(ownMetrics.response.status, 200, JSON.stringify(ownMetrics.data));
     assert.equal(ownMetrics.data.averageScore, 80);
     assert.equal(ownMetrics.data.rank, 2);
     assert.equal(ownMetrics.data.approvedAttendance, 0);

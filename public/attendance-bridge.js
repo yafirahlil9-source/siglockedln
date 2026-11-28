@@ -82,8 +82,8 @@ renderUserAttendance = async function () {
             </label>
 
             <div class="location-status" id="locationStatus">
-                <span class="status-dot good"></span>
-                <span>Lokasi siap disinkronkan saat pengiriman foto absen.</span>
+                <span class="status-dot"></span>
+                <span>Lokasi GPS akan diverifikasi ulang saat foto absen dikirim.</span>
             </div>
 
             <p class="hint">✓ Proteksi Anti Titip Absen: Sistem AI biometrik mengenali 128 fitur wajah secara real-time. Jika wajah bukan milik akun <strong>${esc(accountOwnerName)}</strong>, absensi otomatis ditolak.</p>
@@ -267,29 +267,35 @@ renderUserAttendance = async function () {
 
     $('#startCamera').onclick = activateCamera;
 
-    $('#checkLocation').onclick = () => {
-        if (!navigator.geolocation) {
-            location = { latitude: Number(schoolSettings.latitude || -6.2), longitude: Number(schoolSettings.longitude || 106.816666), accuracy: 20 };
-            $('#locationStatus').innerHTML = '<span class="status-dot good"></span><span>Koordinat sekolah siap digunakan.</span>';
-            return toast('Lokasi disesuaikan dengan koordinat sekolah.');
-        }
+    async function verifySchoolLocation() {
+        location = null;
+        if (!navigator.geolocation) throw new Error('Browser ini tidak mendukung lokasi GPS.');
+        const position = await new Promise((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, error => {
+                reject(new Error(error.code === 1
+                    ? 'Izin lokasi ditolak. Aktifkan izin lokasi di pengaturan browser.'
+                    : 'Lokasi GPS tidak dapat dibaca. Pastikan GPS aktif dan coba lagi.'));
+            }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+        });
+        const { settings } = await api('/api/attendance/settings');
+        const meters = Math.round(distanceMeters(position.coords.latitude, position.coords.longitude, settings.latitude, settings.longitude));
+        if (position.coords.accuracy > 100) throw new Error(`Akurasi GPS terlalu rendah (${Math.round(position.coords.accuracy)} meter).`);
+        if (meters > Number(settings.radiusMeters)) throw new Error(`Di luar radius sekolah (${meters} meter).`);
+        location = position.coords;
+        return { meters, accuracy: Math.round(position.coords.accuracy) };
+    }
 
+    $('#checkLocation').onclick = async () => {
         $('#locationStatus').innerHTML = '<span class="status-dot pending"></span><span>Memeriksa lokasi...</span>';
-        navigator.geolocation.getCurrentPosition(async position => {
-            location = position.coords;
-            try {
-                let { settings } = await api('/api/attendance/settings');
-                let meters = Math.round(distanceMeters(location.latitude, location.longitude, settings.latitude, settings.longitude));
-                $('#locationStatus').innerHTML = `<span class="status-dot good"></span><span>Lokasi terdeteksi · ${meters} m dari titik sekolah · akurasi ${Math.round(location.accuracy)} m</span>`;
-            } catch (error) {
-                $('#locationStatus').innerHTML = `<span class="status-dot good"></span><span>Lokasi terdeteksi · akurasi ${Math.round(location.accuracy)} m</span>`;
-            }
-            toast('Lokasi berhasil diperiksa.');
-        }, () => {
-            location = { latitude: Number(schoolSettings.latitude || -6.2), longitude: Number(schoolSettings.longitude || 106.816666), accuracy: 20 };
-            $('#locationStatus').innerHTML = '<span class="status-dot good"></span><span>Lokasi sekolah digunakan (GPS browser tidak diizinkan).</span>';
-            toast('Menggunakan koordinat sekolah untuk absensi.');
-        }, { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 });
+        try {
+            const result = await verifySchoolLocation();
+            $('#locationStatus').innerHTML = `<span class="status-dot good"></span><span>Dalam radius sekolah · ${result.meters} m · akurasi ${result.accuracy} m</span>`;
+            toast('Lokasi berada di dalam radius sekolah.');
+        } catch (error) {
+            location = null;
+            $('#locationStatus').innerHTML = '<span class="status-dot warning"></span><span>Lokasi belum valid untuk absensi.</span>';
+            toast(error.message);
+        }
     };
 
     capture.onclick = async () => {
@@ -339,22 +345,15 @@ renderUserAttendance = async function () {
         if (!consent.checked) consent.checked = true;
 
         // 5. Lokasi
-        if (!location) {
-            $('#locationStatus').innerHTML = '<span class="status-dot pending"></span><span>Menyiapkan lokasi absensi...</span>';
-            try {
-                let pos = await new Promise((res, rej) => {
-                    navigator.geolocation.getCurrentPosition(res, rej, { timeout: 3000, enableHighAccuracy: false });
-                });
-                location = pos.coords;
-            } catch (err) {
-                let { settings } = await api('/api/attendance/settings').catch(() => ({ settings: schoolSettings }));
-                location = {
-                    latitude: Number(settings?.latitude || schoolSettings.latitude || -6.2),
-                    longitude: Number(settings?.longitude || schoolSettings.longitude || 106.816666),
-                    accuracy: 25
-                };
-            }
-            $('#locationStatus').innerHTML = `<span class="status-dot good"></span><span>Lokasi siap disinkronkan.</span>`;
+        $('#locationStatus').innerHTML = '<span class="status-dot pending"></span><span>Memverifikasi lokasi absensi...</span>';
+        try {
+            const verifiedLocation = await verifySchoolLocation();
+            $('#locationStatus').innerHTML = `<span class="status-dot good"></span><span>Lokasi terverifikasi · ${verifiedLocation.meters} m · akurasi ${verifiedLocation.accuracy} m</span>`;
+        } catch (error) {
+            location = null;
+            $('#locationStatus').innerHTML = '<span class="status-dot warning"></span><span>Absen ditolak karena lokasi tidak valid.</span>';
+            toast(error.message);
+            return;
         }
 
         capture.disabled = true;

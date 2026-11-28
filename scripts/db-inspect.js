@@ -20,23 +20,23 @@ async function inspectDatabase() {
     console.table(tables);
 
     const tableNames = new Set(tables.map(table => table.name));
-    if (tableNames.has('users')) {
+    if (tableNames.has('pengguna')) {
       const [accounts] = await connection.query(
-        'SELECT full_name AS name, email, role, status, created_at AS createdAt FROM users ORDER BY created_at'
+        'SELECT full_name AS name, email, role, status, created_at AS createdAt FROM pengguna ORDER BY created_at'
       );
       console.log('\nAccounts:');
       console.table(accounts);
     }
 
-    for (const table of ['posts', 'comments', 'assignments', 'attendance', 'notifications']) {
+    for (const [table, label] of [['postingan', 'Postingan'], ['komentar', 'Komentar'], ['tugas', 'Tugas'], ['kehadiran', 'Kehadiran'], ['notifikasi', 'Notifikasi']]) {
       if (!tableNames.has(table)) continue;
       const [[{ count }]] = await connection.query(`SELECT COUNT(*) AS count FROM \`${table}\``);
-      console.log(`${table}: ${count} rows`);
+      console.log(`${label}: ${count} rows`);
     }
 
-    if (tableNames.has('attendance')) {
+    if (tableNames.has('kehadiran')) {
       const [attendance] = await connection.query(
-        'SELECT verification, COUNT(*) AS count FROM attendance GROUP BY verification ORDER BY verification'
+        'SELECT verification, COUNT(*) AS count FROM kehadiran GROUP BY verification ORDER BY verification'
       );
       console.log('\nAttendance by verification state:');
       console.table(attendance);

@@ -27,39 +27,18 @@ const isProduction = process.env.NODE_ENV === 'production';
 const googleEnabled = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 const autoActivateAccounts = process.env.AUTO_ACTIVATE_ACCOUNTS !== 'false';
 const photoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
-const submissionStorage = multer.diskStorage({
-	destination: (req, file, cb) => cb(null, submissionDir),
-	filename: (req, file, cb) => {
-		const ext = path.extname(file.originalname).replace(/[^a-zA-Z0-9.]/g, '').slice(0, 12);
-		cb(null, `${crypto.randomUUID()}${ext}`);
-	}
-});
 const submissionUpload = multer({
-	storage: submissionStorage,
+	storage: multer.memoryStorage(),
 	limits: { fileSize: 25 * 1024 * 1024, files: 1 }
 });
 
-const postImageStorage = multer.diskStorage({
-	destination: (req, file, cb) => cb(null, postImageDir),
-	filename: (req, file, cb) => {
-		const ext = path.extname(file.originalname).toLowerCase().replace(/[^a-zA-Z0-9.]/g, '').slice(0, 10) || '.jpg';
-		cb(null, `${crypto.randomUUID()}${ext}`);
-	}
-});
 const postImageUpload = multer({
-	storage: postImageStorage,
+	storage: multer.memoryStorage(),
 	limits: { fileSize: 10 * 1024 * 1024, files: 1 }
 });
 
-const assignmentStorage = multer.diskStorage({
-	destination: (req, file, cb) => cb(null, assignmentAttachmentDir),
-	filename: (req, file, cb) => {
-		const ext = path.extname(file.originalname).replace(/[^a-zA-Z0-9.]/g, '').slice(0, 12);
-		cb(null, `${crypto.randomUUID()}${ext}`);
-	}
-});
 const assignmentUpload = multer({
-	storage: assignmentStorage,
+	storage: multer.memoryStorage(),
 	limits: { fileSize: 25 * 1024 * 1024, files: 1 }
 });
 
@@ -83,6 +62,23 @@ fs.mkdirSync(profileMediaDir, { recursive: true });
 fs.mkdirSync(postImageDir, { recursive: true });
 fs.mkdirSync(assignmentAttachmentDir, { recursive: true });
 
+async function writeFileAtomic(filePath, buffer, overwrite = false) {
+	const tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${crypto.randomUUID()}.tmp`);
+	try {
+		const handle = await fs.promises.open(tempPath, 'wx', 0o600);
+		try {
+			await handle.writeFile(buffer);
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+		if (overwrite) await fs.promises.rename(tempPath, filePath);
+		else await fs.promises.link(tempPath, filePath);
+	} finally {
+		await fs.promises.unlink(tempPath).catch(() => {});
+	}
+}
+
 const pool = mysql.createPool({
 	host: process.env.DB_HOST || 'localhost',
 	user: process.env.DB_USER || 'root',
@@ -95,13 +91,13 @@ const pool = mysql.createPool({
 
 class MysqlSessionStore extends session.Store {
 	async _init() {
-		await pool.execute('CREATE TABLE IF NOT EXISTS sessions (sid VARCHAR(255) PRIMARY KEY, sess TEXT NOT NULL, expire BIGINT NOT NULL) ENGINE=InnoDB');
+		await pool.execute('CREATE TABLE IF NOT EXISTS sesi (sid VARCHAR(255) PRIMARY KEY, sess TEXT NOT NULL, expire BIGINT NOT NULL) ENGINE=InnoDB');
 	}
 	get(sid, callback) {
-		pool.execute('SELECT sess, expire FROM sessions WHERE sid=?', [sid]).then(([rows]) => {
+		pool.execute('SELECT sess, expire FROM sesi WHERE sid=?', [sid]).then(([rows]) => {
 			if (!rows.length) return callback(null, null);
 			if (rows[0].expire <= Date.now()) {
-				pool.execute('DELETE FROM sessions WHERE sid=?', [sid]).catch(() => {});
+				pool.execute('DELETE FROM sesi WHERE sid=?', [sid]).catch(() => {});
 				return callback(null, null);
 			}
 			callback(null, JSON.parse(rows[0].sess));
@@ -109,11 +105,11 @@ class MysqlSessionStore extends session.Store {
 	}
 	set(sid, value, callback = () => {}) {
 		const expiresAt = value.cookie?.expires ? new Date(value.cookie.expires).getTime() : Date.now() + 7 * 24 * 60 * 60 * 1000;
-		pool.execute('INSERT INTO sessions (sid, sess, expire) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE sess=VALUES(sess), expire=VALUES(expire)', [sid, JSON.stringify(value), expiresAt])
+		pool.execute('INSERT INTO sesi (sid, sess, expire) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE sess=VALUES(sess), expire=VALUES(expire)', [sid, JSON.stringify(value), expiresAt])
 			.then(() => callback(null)).catch(error => callback(error));
 	}
 	destroy(sid, callback = () => {}) {
-		pool.execute('DELETE FROM sessions WHERE sid=?', [sid])
+		pool.execute('DELETE FROM sesi WHERE sid=?', [sid])
 			.then(() => callback(null)).catch(error => callback(error));
 	}
 	touch(sid, value, callback = () => {}) { this.set(sid, value, callback); }
@@ -174,9 +170,37 @@ const databasePromise = (async () => {
 	await initConn.query(`CREATE DATABASE IF NOT EXISTS \`${process.env.DB_NAME || 'sekolah_hub'}\``);
 	await initConn.end();
 
+	const tableRenames = {
+		sessions: 'sesi',
+		users: 'pengguna',
+		school_settings: 'pengaturan_sekolah',
+		posts: 'postingan',
+		post_likes: 'suka_postingan',
+		comments: 'komentar',
+		classes: 'kelas',
+		assignments: 'tugas',
+		submissions: 'pengumpulan',
+		attendance: 'kehadiran',
+		notifications: 'notifikasi'
+	};
+	const [existingTables] = await pool.execute(
+		'SELECT TABLE_NAME AS tableName FROM information_schema.tables WHERE TABLE_SCHEMA = DATABASE()'
+	);
+	const existingTableNames = new Set(existingTables.map(table => table.tableName));
+	const conflicts = Object.entries(tableRenames).filter(([legacy, target]) =>
+		existingTableNames.has(legacy) && existingTableNames.has(target)
+	);
+	if (conflicts.length > 0) {
+		throw new Error(`Database migration aborted: both legacy and target tables exist (${conflicts.map(([legacy, target]) => `${legacy} -> ${target}`).join(', ')}). No tables were renamed.`);
+	}
+	const renames = Object.entries(tableRenames)
+		.filter(([legacy, target]) => existingTableNames.has(legacy) && !existingTableNames.has(target))
+		.map(([legacy, target]) => `\`${legacy}\` TO \`${target}\``);
+	if (renames.length > 0) await pool.execute(`RENAME TABLE ${renames.join(', ')}`);
+
 	await sessionStore._init();
 
-	await pool.execute(`CREATE TABLE IF NOT EXISTS users (
+	await pool.execute(`CREATE TABLE IF NOT EXISTS pengguna (
 		id VARCHAR(36) PRIMARY KEY, full_name VARCHAR(120) NOT NULL, email VARCHAR(120) NOT NULL UNIQUE,
 		password_hash VARCHAR(255), role ENUM('SISWA','GURU','STAF','ADMIN') NOT NULL,
 		identity_number VARCHAR(30) NOT NULL UNIQUE, detail VARCHAR(80) NOT NULL DEFAULT '', bio VARCHAR(300) NOT NULL DEFAULT '', google_id VARCHAR(100) UNIQUE,
@@ -184,69 +208,69 @@ const databasePromise = (async () => {
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	) ENGINE=InnoDB`);
 	try {
-		await pool.execute("ALTER TABLE users ADD COLUMN face_descriptor MEDIUMTEXT DEFAULT NULL");
+		await pool.execute("ALTER TABLE pengguna ADD COLUMN face_descriptor MEDIUMTEXT DEFAULT NULL");
 	} catch (_) {}
 	try {
-		await pool.execute("ALTER TABLE users ADD COLUMN avatar_name VARCHAR(160) DEFAULT NULL");
+		await pool.execute("ALTER TABLE pengguna ADD COLUMN avatar_name VARCHAR(160) DEFAULT NULL");
 	} catch (_) {}
 	try {
-		await pool.execute("ALTER TABLE users ADD COLUMN cover_name VARCHAR(160) DEFAULT NULL");
+		await pool.execute("ALTER TABLE pengguna ADD COLUMN cover_name VARCHAR(160) DEFAULT NULL");
 	} catch (_) {}
 
-	await pool.execute(`CREATE TABLE IF NOT EXISTS school_settings (
+	await pool.execute(`CREATE TABLE IF NOT EXISTS pengaturan_sekolah (
 		id INT PRIMARY KEY, latitude DOUBLE NOT NULL, longitude DOUBLE NOT NULL,
 		radius_meters INT NOT NULL, open_time VARCHAR(5) NOT NULL, close_time VARCHAR(5) NOT NULL,
 		late_after VARCHAR(5) NOT NULL
 	) ENGINE=InnoDB`);
 
-	await pool.execute(`CREATE TABLE IF NOT EXISTS posts (
+	await pool.execute(`CREATE TABLE IF NOT EXISTS postingan (
 		id VARCHAR(36) PRIMARY KEY, author_id VARCHAR(36) NOT NULL, title VARCHAR(200) NOT NULL,
 		body TEXT NOT NULL, image_name VARCHAR(255) DEFAULT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (author_id) REFERENCES users(id)
+		FOREIGN KEY (author_id) REFERENCES pengguna(id)
 	) ENGINE=InnoDB`);
 	try {
-		await pool.execute("ALTER TABLE posts ADD COLUMN image_name VARCHAR(255) DEFAULT NULL");
+		await pool.execute("ALTER TABLE postingan ADD COLUMN image_name VARCHAR(255) DEFAULT NULL");
 	} catch (_) {}
 
-	await pool.execute(`CREATE TABLE IF NOT EXISTS post_likes (
+	await pool.execute(`CREATE TABLE IF NOT EXISTS suka_postingan (
 		post_id VARCHAR(36) NOT NULL, user_id VARCHAR(36) NOT NULL,
 		PRIMARY KEY(post_id, user_id),
-		FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
-		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		FOREIGN KEY (post_id) REFERENCES postingan(id) ON DELETE CASCADE,
+		FOREIGN KEY (user_id) REFERENCES pengguna(id) ON DELETE CASCADE
 	) ENGINE=InnoDB`);
 
-	await pool.execute(`CREATE TABLE IF NOT EXISTS comments (
+	await pool.execute(`CREATE TABLE IF NOT EXISTS komentar (
 		id VARCHAR(36) PRIMARY KEY, post_id VARCHAR(36) NOT NULL,
 		author_id VARCHAR(36) NOT NULL, body VARCHAR(500) NOT NULL,
 		is_anonymous TINYINT NOT NULL DEFAULT 1, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
-		FOREIGN KEY (author_id) REFERENCES users(id)
+		FOREIGN KEY (post_id) REFERENCES postingan(id) ON DELETE CASCADE,
+		FOREIGN KEY (author_id) REFERENCES pengguna(id)
 	) ENGINE=InnoDB`);
 
-	await pool.execute(`CREATE TABLE IF NOT EXISTS classes (
+	await pool.execute(`CREATE TABLE IF NOT EXISTS kelas (
 		id INT AUTO_INCREMENT PRIMARY KEY,
 		name VARCHAR(60) NOT NULL UNIQUE,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	) ENGINE=InnoDB`);
 	try {
-		const [existingClasses] = await pool.execute('SELECT COUNT(*) AS count FROM classes');
+		const [existingClasses] = await pool.execute('SELECT COUNT(*) AS count FROM kelas');
 		if (existingClasses[0].count === 0) {
 			const defaultClasses = [
 				'X RPL 1', 'X RPL 2', 'XI RPL 1', 'XI RPL 2', 'XII RPL 1', 'XII RPL 2',
 				'X TKJ 1', 'XI TKJ 1', 'XII TKJ 1'
 			];
 			for (const cls of defaultClasses) {
-				await pool.execute('INSERT IGNORE INTO classes (name) VALUES (?)', [cls]);
+				await pool.execute('INSERT IGNORE INTO kelas (name) VALUES (?)', [cls]);
 			}
-			const [userClasses] = await pool.execute("SELECT DISTINCT detail FROM users WHERE role='SISWA' AND detail != ''");
+			const [userClasses] = await pool.execute("SELECT DISTINCT detail FROM pengguna WHERE role='SISWA' AND detail != ''");
 			for (const row of userClasses) {
 				const cName = (row.detail || '').trim();
-				if (cName) await pool.execute('INSERT IGNORE INTO classes (name) VALUES (?)', [cName]);
+				if (cName) await pool.execute('INSERT IGNORE INTO kelas (name) VALUES (?)', [cName]);
 			}
 		}
 	} catch (_) {}
 
-	await pool.execute(`CREATE TABLE IF NOT EXISTS assignments (
+	await pool.execute(`CREATE TABLE IF NOT EXISTS tugas (
 		id VARCHAR(36) PRIMARY KEY, title VARCHAR(150) NOT NULL, instructions TEXT NOT NULL,
 		subject VARCHAR(80) NOT NULL, class_name VARCHAR(60) NOT NULL,
 		category ENUM('Teori','Bengkel') NOT NULL DEFAULT 'Teori',
@@ -255,19 +279,19 @@ const databasePromise = (async () => {
 		attachment_name VARCHAR(255) DEFAULT NULL,
 		attachment_original_name VARCHAR(255) DEFAULT NULL,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (created_by) REFERENCES users(id)
+		FOREIGN KEY (created_by) REFERENCES pengguna(id)
 	) ENGINE=InnoDB`);
 	try {
-		await pool.execute("ALTER TABLE assignments ADD COLUMN category ENUM('Teori','Bengkel') NOT NULL DEFAULT 'Teori'");
+		await pool.execute("ALTER TABLE tugas ADD COLUMN category ENUM('Teori','Bengkel') NOT NULL DEFAULT 'Teori'");
 	} catch (_) {}
 	try {
-		await pool.execute("ALTER TABLE assignments ADD COLUMN attachment_name VARCHAR(255) DEFAULT NULL");
+		await pool.execute("ALTER TABLE tugas ADD COLUMN attachment_name VARCHAR(255) DEFAULT NULL");
 	} catch (_) {}
 	try {
-		await pool.execute("ALTER TABLE assignments ADD COLUMN attachment_original_name VARCHAR(255) DEFAULT NULL");
+		await pool.execute("ALTER TABLE tugas ADD COLUMN attachment_original_name VARCHAR(255) DEFAULT NULL");
 	} catch (_) {}
 
-	await pool.execute(`CREATE TABLE IF NOT EXISTS submissions (
+	await pool.execute(`CREATE TABLE IF NOT EXISTS pengumpulan (
 		id VARCHAR(36) PRIMARY KEY, assignment_id VARCHAR(36) NOT NULL,
 		student_id VARCHAR(36) NOT NULL,
 		answer_text TEXT NOT NULL,
@@ -276,37 +300,40 @@ const databasePromise = (async () => {
 		score DOUBLE DEFAULT NULL,
 		feedback TEXT NOT NULL, submitted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(assignment_id, student_id),
-		FOREIGN KEY (assignment_id) REFERENCES assignments(id) ON DELETE CASCADE,
-		FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+		FOREIGN KEY (assignment_id) REFERENCES tugas(id) ON DELETE CASCADE,
+		FOREIGN KEY (student_id) REFERENCES pengguna(id) ON DELETE CASCADE
 	) ENGINE=InnoDB`);
 	try {
-		await pool.execute("ALTER TABLE submissions ADD COLUMN file_name VARCHAR(255) DEFAULT NULL");
+		await pool.execute("ALTER TABLE pengumpulan ADD COLUMN file_name VARCHAR(255) DEFAULT NULL");
 	} catch (_) {}
 	try {
-		await pool.execute("ALTER TABLE submissions ADD COLUMN file_original_name VARCHAR(255) DEFAULT NULL");
+		await pool.execute("ALTER TABLE pengumpulan ADD COLUMN file_original_name VARCHAR(255) DEFAULT NULL");
 	} catch (_) {}
 
-	await pool.execute(`CREATE TABLE IF NOT EXISTS attendance (
+	await pool.execute(`CREATE TABLE IF NOT EXISTS kehadiran (
 		id VARCHAR(36) PRIMARY KEY, user_id VARCHAR(36) NOT NULL, day VARCHAR(10) NOT NULL,
 		photo_name VARCHAR(100) NOT NULL, latitude DOUBLE NOT NULL, longitude DOUBLE NOT NULL,
 		accuracy DOUBLE NOT NULL, captured_at VARCHAR(30) NOT NULL,
 		verification ENUM('MENUNGGU','DISETUJUI','DITOLAK') NOT NULL DEFAULT 'MENUNGGU',
 		UNIQUE(user_id, day),
-		FOREIGN KEY (user_id) REFERENCES users(id)
+		FOREIGN KEY (user_id) REFERENCES pengguna(id)
 	) ENGINE=InnoDB`);
 
-	await pool.execute(`CREATE TABLE IF NOT EXISTS notifications (
+	await pool.execute(`CREATE TABLE IF NOT EXISTS notifikasi (
 		id VARCHAR(36) PRIMARY KEY, user_id VARCHAR(36) NOT NULL,
 		title VARCHAR(200) NOT NULL, message TEXT NOT NULL, is_read TINYINT NOT NULL DEFAULT 0,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (user_id) REFERENCES users(id)
+		FOREIGN KEY (user_id) REFERENCES pengguna(id)
 	) ENGINE=InnoDB`);
 
-	await pool.execute(`INSERT INTO school_settings (id, latitude, longitude, radius_meters, open_time, close_time, late_after)
-		VALUES (1, -6.2, 106.816666, 100, '06:30', '23:59', '07:15')
+	await pool.execute(`INSERT INTO pengaturan_sekolah (id, latitude, longitude, radius_meters, open_time, close_time, late_after)
+		VALUES (1, -7.164041847763249, 112.64734569558635, 100, '06:30', '23:59', '07:15')
 		ON DUPLICATE KEY UPDATE close_time = IF(close_time = '10:00', '23:59', close_time)`);
+	await pool.execute(`UPDATE pengaturan_sekolah SET latitude=?,longitude=?,radius_meters=?
+		WHERE id=1 AND latitude=-6.2 AND longitude=106.816666`,
+	[-7.164041847763249, 112.64734569558635, 100]);
 
-	if (autoActivateAccounts) await db.run("UPDATE users SET status='AKTIF' WHERE status='PENDING'");
+	if (autoActivateAccounts) await db.run("UPDATE pengguna SET status='AKTIF' WHERE status='PENDING'");
 	console.log('Database MySQL (sekolah_hub) siap.');
 	return db;
 })().catch(error => {
@@ -404,9 +431,9 @@ function publicUser(user) {
 }
 
 async function notifyAllAdmins(db, title, message) {
-	const admins = await db.all("SELECT id FROM users WHERE role='ADMIN' AND status='AKTIF'");
+	const admins = await db.all("SELECT id FROM pengguna WHERE role='ADMIN' AND status='AKTIF'");
 	for (const admin of admins) {
-		await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)', crypto.randomUUID(), admin.id, title, message);
+		await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)', crypto.randomUUID(), admin.id, title, message);
 	}
 }
 
@@ -414,10 +441,10 @@ async function notifyClassStudents(db, className, title, message) {
 	try {
 		const isAll = !className || className.toLowerCase().includes('semua');
 		const students = isAll
-			? await db.all("SELECT id FROM users WHERE role='SISWA' AND status='AKTIF'")
-			: await db.all("SELECT id FROM users WHERE role='SISWA' AND status='AKTIF' AND (LOWER(TRIM(detail)) = LOWER(TRIM(?)) OR LOWER(detail) LIKE CONCAT('%', LOWER(TRIM(?)), '%') OR LOWER(?) LIKE CONCAT('%', LOWER(TRIM(detail)), '%'))", className, className, className);
+			? await db.all("SELECT id FROM pengguna WHERE role='SISWA' AND status='AKTIF'")
+			: await db.all("SELECT id FROM pengguna WHERE role='SISWA' AND status='AKTIF' AND (LOWER(TRIM(detail)) = LOWER(TRIM(?)) OR LOWER(detail) LIKE CONCAT('%', LOWER(TRIM(?)), '%') OR LOWER(?) LIKE CONCAT('%', LOWER(TRIM(detail)), '%'))", className, className, className);
 		for (const student of students) {
-			await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)', crypto.randomUUID(), student.id, title, message);
+			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)', crypto.randomUUID(), student.id, title, message);
 		}
 	} catch (e) {
 		console.error('Gagal mengirim notifikasi siswa:', e.message);
@@ -451,7 +478,7 @@ function configureGoogle() {
 			const db = await databasePromise;
 			const email = profile.emails?.[0]?.value?.trim().toLowerCase();
 			if (!email || profile._json?.email_verified !== true) return done(null, false);
-			let user = await db.get('SELECT * FROM users WHERE google_id = ? OR LOWER(email) = LOWER(?)', profile.id, email);
+			let user = await db.get('SELECT * FROM pengguna WHERE google_id = ? OR LOWER(email) = LOWER(?)', profile.id, email);
 			if (!user && req.session.googleRegistration) {
 				const intent = req.session.googleRegistration;
 				if (intent.email !== email) return done(null, false);
@@ -461,11 +488,11 @@ function configureGoogle() {
 					? intent.identityNumber.trim()
 					: `${intent.role}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
 				const detailText = intent.detail ? intent.detail.trim() : '';
-				await db.run('INSERT INTO users (id, full_name, email, role, identity_number, detail, google_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, intent.name, email, intent.role, identityNum, detailText, profile.id, status);
-				user = await db.get('SELECT * FROM users WHERE id = ?', id);
+				await db.run('INSERT INTO pengguna (id, full_name, email, role, identity_number, detail, google_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, intent.name, email, intent.role, identityNum, detailText, profile.id, status);
+				user = await db.get('SELECT * FROM pengguna WHERE id = ?', id);
 				await notifyAllAdmins(db, 'Pendaftaran akun baru', `${intent.name} (${intent.role}) mendaftar dengan Google${autoActivateAccounts ? ' dan sudah aktif otomatis.' : ' dan menunggu aktivasi.'}`);
 			} else if (user && !user.google_id) {
-				await db.run('UPDATE users SET google_id = ? WHERE id = ?', profile.id, user.id);
+				await db.run('UPDATE pengguna SET google_id = ? WHERE id = ?', profile.id, user.id);
 				user.google_id = profile.id;
 			} else if (user && user.google_id !== profile.id) {
 				return done(null, false);
@@ -483,7 +510,7 @@ passport.serializeUser((user, done) => done(null, user.id));
 passport.deserializeUser(async (id, done) => {
 	try {
 		const db = await databasePromise;
-		done(null, await db.get('SELECT * FROM users WHERE id = ?', id) || false);
+		done(null, await db.get('SELECT * FROM pengguna WHERE id = ?', id) || false);
 	} catch (error) {
 		done(error);
 	}
@@ -524,7 +551,7 @@ app.post('/api/auth/register', sameOrigin, authLimiter, async (req, res, next) =
 			? data.identityNumber.trim()
 			: `${data.role}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
 		const detailText = data.detail ? data.detail.trim() : '';
-		await db.run('INSERT INTO users (id, full_name, email, password_hash, role, identity_number, detail, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, data.name, data.email.toLowerCase(), hash, data.role, identityNum, detailText, status);
+		await db.run('INSERT INTO pengguna (id, full_name, email, password_hash, role, identity_number, detail, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, data.name, data.email.toLowerCase(), hash, data.role, identityNum, detailText, status);
 		await notifyAllAdmins(db, 'Pendaftaran akun baru', `${data.name} (${data.role})${autoActivateAccounts ? ' sudah aktif otomatis.' : ' menunggu aktivasi admin.'}`);
 		res.status(201).json({ autoActivated: autoActivateAccounts, message: autoActivateAccounts ? 'Pendaftaran berhasil. Akun Anda sudah aktif, silakan masuk.' : 'Pendaftaran berhasil. Akun menunggu aktivasi admin sekolah.' });
 	} catch (error) {
@@ -538,7 +565,7 @@ app.post('/api/auth/login', sameOrigin, loginLimiter, async (req, res, next) => 
 	if (!parsed.success) return res.status(422).json({ error: 'Email atau kata sandi tidak valid.' });
 	try {
 		const db = await databasePromise;
-		const user = await db.get('SELECT * FROM users WHERE LOWER(email) = LOWER(?)', parsed.data.email);
+		const user = await db.get('SELECT * FROM pengguna WHERE LOWER(email) = LOWER(?)', parsed.data.email);
 		const matches = user?.password_hash ? await bcrypt.compare(parsed.data.password, user.password_hash) : false;
 		if (!user || !matches) return res.status(401).json({ error: 'Email atau kata sandi salah.' });
 		if (user.status !== 'AKTIF') return res.status(403).json({ error: 'Akun menunggu aktivasi admin atau telah dinonaktifkan.' });
@@ -579,7 +606,7 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
 app.get('/api/admin/accounts', requireActiveUser, requireAdmin, async (_, res, next) => {
 	try {
 		const db = await databasePromise;
-		const accounts = await db.all('SELECT id, full_name AS name, email, role, identity_number AS identityNumber, detail, status, created_at AS createdAt FROM users ORDER BY created_at DESC');
+		const accounts = await db.all('SELECT id, full_name AS name, email, role, identity_number AS identityNumber, detail, status, created_at AS createdAt FROM pengguna ORDER BY created_at DESC');
 		res.json({ accounts });
 	} catch (error) {
 		next(error);
@@ -591,9 +618,9 @@ app.patch('/api/admin/accounts/:id/status', sameOrigin, requireActiveUser, requi
 	if (!parsed.success) return res.status(422).json({ error: 'Status akun tidak valid.' });
 	try {
 		const db = await databasePromise;
-		const result = await db.run('UPDATE users SET status = ? WHERE id = ? AND role != ?', parsed.data.status, req.params.id, 'ADMIN');
+		const result = await db.run('UPDATE pengguna SET status = ? WHERE id = ? AND role != ?', parsed.data.status, req.params.id, 'ADMIN');
 		if (!result.changes) return res.status(404).json({ error: 'Akun tidak ditemukan.' });
-		await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+		await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
 			crypto.randomUUID(), req.params.id, 'Status Akun Diperbarui',
 			`Status akun Anda telah diubah oleh admin menjadi ${parsed.data.status}.`);
 		res.json({ ok: true });
@@ -610,7 +637,7 @@ app.delete('/api/admin/accounts/:id', sameOrigin, requireActiveUser, requireAdmi
 		}
 
 		const db = await databasePromise;
-		const targetUser = await db.get('SELECT id, full_name, role FROM users WHERE id = ?', targetId);
+		const targetUser = await db.get('SELECT id, full_name, role FROM pengguna WHERE id = ?', targetId);
 		if (!targetUser) {
 			return res.status(404).json({ error: 'Akun warga sekolah tidak ditemukan.' });
 		}
@@ -619,58 +646,58 @@ app.delete('/api/admin/accounts/:id', sameOrigin, requireActiveUser, requireAdmi
 		}
 
 		// 1. Hapus foto kehadiran milik user
-		const attPhotos = await db.all('SELECT photo_name FROM attendance WHERE user_id = ?', targetId);
+		const attPhotos = await db.all('SELECT photo_name FROM kehadiran WHERE user_id = ?', targetId);
 		for (const att of attPhotos) {
 			if (att.photo_name) {
 				await fs.promises.unlink(path.join(photoDir, att.photo_name)).catch(() => {});
 			}
 		}
-		await db.run('DELETE FROM attendance WHERE user_id = ?', targetId);
+		await db.run('DELETE FROM kehadiran WHERE user_id = ?', targetId);
 
 		// 2. Hapus pengumpulan tugas siswa dan file-nya
-		const studentSubs = await db.all('SELECT file_name FROM submissions WHERE student_id = ?', targetId);
+		const studentSubs = await db.all('SELECT file_name FROM pengumpulan WHERE student_id = ?', targetId);
 		for (const sub of studentSubs) {
 			if (sub.file_name) {
 				await fs.promises.unlink(path.join(submissionDir, sub.file_name)).catch(() => {});
 			}
 		}
-		await db.run('DELETE FROM submissions WHERE student_id = ?', targetId);
+		await db.run('DELETE FROM pengumpulan WHERE student_id = ?', targetId);
 
 		// 3. Hapus tugas yang dibuat user (jika guru) beserta pengumpulannya
-		const teacherAssignments = await db.all('SELECT id FROM assignments WHERE created_by = ?', targetId);
+		const teacherAssignments = await db.all('SELECT id FROM tugas WHERE created_by = ?', targetId);
 		for (const asg of teacherAssignments) {
-			const asgSubs = await db.all('SELECT file_name FROM submissions WHERE assignment_id = ?', asg.id);
+			const asgSubs = await db.all('SELECT file_name FROM pengumpulan WHERE assignment_id = ?', asg.id);
 			for (const sub of asgSubs) {
 				if (sub.file_name) {
 					await fs.promises.unlink(path.join(submissionDir, sub.file_name)).catch(() => {});
 				}
 			}
-			await db.run('DELETE FROM submissions WHERE assignment_id = ?', asg.id);
+			await db.run('DELETE FROM pengumpulan WHERE assignment_id = ?', asg.id);
 		}
-		await db.run('DELETE FROM assignments WHERE created_by = ?', targetId);
+		await db.run('DELETE FROM tugas WHERE created_by = ?', targetId);
 
 		// 4. Hapus topik yang dibuat user beserta komentar & likes
-		const userPosts = await db.all('SELECT id FROM posts WHERE author_id = ?', targetId);
+		const userPosts = await db.all('SELECT id FROM postingan WHERE author_id = ?', targetId);
 		for (const post of userPosts) {
-			await db.run('DELETE FROM comments WHERE post_id = ?', post.id);
-			await db.run('DELETE FROM post_likes WHERE post_id = ?', post.id);
+			await db.run('DELETE FROM komentar WHERE post_id = ?', post.id);
+			await db.run('DELETE FROM suka_postingan WHERE post_id = ?', post.id);
 		}
-		await db.run('DELETE FROM posts WHERE author_id = ?', targetId);
+		await db.run('DELETE FROM postingan WHERE author_id = ?', targetId);
 
 		// 5. Hapus komentar dan likes yang diberikan user pada topik lain
-		await db.run('DELETE FROM comments WHERE author_id = ?', targetId);
-		await db.run('DELETE FROM post_likes WHERE user_id = ?', targetId);
+		await db.run('DELETE FROM komentar WHERE author_id = ?', targetId);
+		await db.run('DELETE FROM suka_postingan WHERE user_id = ?', targetId);
 
 		// 6. Hapus notifikasi untuk user
-		await db.run('DELETE FROM notifications WHERE user_id = ?', targetId);
+		await db.run('DELETE FROM notifikasi WHERE user_id = ?', targetId);
 
 		// 7. Hapus sesi aktif user jika ada
 		try {
-			await pool.execute('DELETE FROM sessions WHERE sess LIKE ?', [`%"id":"${targetId}"%`]);
+			await pool.execute('DELETE FROM sesi WHERE sess LIKE ?', [`%"id":"${targetId}"%`]);
 		} catch (_) {}
 
 		// 8. Hapus dari tabel users
-		await db.run('DELETE FROM users WHERE id = ?', targetId);
+		await db.run('DELETE FROM pengguna WHERE id = ?', targetId);
 
 		res.json({ ok: true, message: `Akun warga sekolah "${targetUser.full_name}" berhasil dihapus.` });
 	} catch (error) {
@@ -681,7 +708,7 @@ app.delete('/api/admin/accounts/:id', sameOrigin, requireActiveUser, requireAdmi
 app.get('/api/profile/me', requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const row = await db.get('SELECT id,full_name AS name,role,detail,bio,avatar_name,cover_name,(face_descriptor IS NOT NULL) AS hasFaceRegistered FROM users WHERE id=?', req.user.id);
+		const row = await db.get('SELECT id,full_name AS name,role,detail,bio,avatar_name,cover_name,(face_descriptor IS NOT NULL) AS hasFaceRegistered FROM pengguna WHERE id=?', req.user.id);
 		const user = row ? {
 			id: row.id,
 			name: row.name,
@@ -692,14 +719,14 @@ app.get('/api/profile/me', requireActiveUser, async (req, res, next) => {
 			avatarUrl: row.avatar_name ? `/api/profile/media/${encodeURIComponent(row.id)}/avatar?v=${encodeURIComponent(row.avatar_name)}` : null,
 			coverUrl: row.cover_name ? `/api/profile/media/${encodeURIComponent(row.id)}/cover?v=${encodeURIComponent(row.cover_name)}` : null
 		} : null;
-		const approvedAttendance = await db.get("SELECT COUNT(*) AS count FROM attendance WHERE user_id=? AND verification='DISETUJUI'", req.user.id);
+		const approvedAttendance = await db.get("SELECT COUNT(*) AS count FROM kehadiran WHERE user_id=? AND verification='DISETUJUI'", req.user.id);
 		let assignmentCount = 0;
-		if (req.user.role === 'ADMIN') assignmentCount = (await db.get('SELECT COUNT(*) AS count FROM assignments')).count;
-		else if (req.user.role === 'GURU') assignmentCount = (await db.get('SELECT COUNT(*) AS count FROM assignments WHERE created_by=?', req.user.id)).count;
+		if (req.user.role === 'ADMIN') assignmentCount = (await db.get('SELECT COUNT(*) AS count FROM tugas')).count;
+		else if (req.user.role === 'GURU') assignmentCount = (await db.get('SELECT COUNT(*) AS count FROM tugas WHERE created_by=?', req.user.id)).count;
 		else if (req.user.role === 'SISWA') {
 			const studentClass = (req.user.detail || '').trim();
 			assignmentCount = (await db.get(`
-				SELECT COUNT(*) AS count FROM assignments
+				SELECT COUNT(*) AS count FROM tugas
 				WHERE LOWER(TRIM(class_name)) = LOWER(TRIM(?))
 				   OR LOWER(TRIM(class_name)) = 'semua'
 				   OR LOWER(TRIM(class_name)) = 'semua kelas'
@@ -718,7 +745,7 @@ app.put('/api/profile/me', sameOrigin, requireActiveUser, async (req, res, next)
 	if (!parsed.success) return res.status(422).json({ error: 'Bio maksimal 300 karakter.' });
 	try {
 		const db = await databasePromise;
-		await db.run('UPDATE users SET bio=? WHERE id=?', parsed.data.bio, req.user.id);
+		await db.run('UPDATE pengguna SET bio=? WHERE id=?', parsed.data.bio, req.user.id);
 		res.json({ bio: parsed.data.bio });
 	} catch (error) {
 		next(error);
@@ -734,10 +761,10 @@ app.post('/api/profile/media/:type', sameOrigin, requireActiveUser, photoUpload.
 	const col = type === 'avatar' ? 'avatar_name' : 'cover_name';
 	try {
 		const db = await databasePromise;
-		const prev = await db.get(`SELECT ${col} AS fileName FROM users WHERE id=?`, req.user.id);
+		const prev = await db.get(`SELECT ${col} AS fileName FROM pengguna WHERE id=?`, req.user.id);
 		const fileName = `${req.user.id}-${type}-${crypto.randomUUID()}${extension}`;
-		await fs.promises.writeFile(path.join(profileMediaDir, fileName), req.file.buffer, { flag: 'wx', mode: 0o600 });
-		await db.run(`UPDATE users SET ${col}=? WHERE id=?`, fileName, req.user.id);
+		await writeFileAtomic(path.join(profileMediaDir, fileName), req.file.buffer);
+		await db.run(`UPDATE pengguna SET ${col}=? WHERE id=?`, fileName, req.user.id);
 		if (prev?.fileName) {
 			await fs.promises.unlink(path.join(profileMediaDir, path.basename(prev.fileName))).catch(() => {});
 		}
@@ -757,8 +784,8 @@ app.delete('/api/profile/media/:type', sameOrigin, requireActiveUser, async (req
 	const col = type === 'avatar' ? 'avatar_name' : 'cover_name';
 	try {
 		const db = await databasePromise;
-		const prev = await db.get(`SELECT ${col} AS fileName FROM users WHERE id=?`, req.user.id);
-		await db.run(`UPDATE users SET ${col}=NULL WHERE id=?`, req.user.id);
+		const prev = await db.get(`SELECT ${col} AS fileName FROM pengguna WHERE id=?`, req.user.id);
+		await db.run(`UPDATE pengguna SET ${col}=NULL WHERE id=?`, req.user.id);
 		if (prev?.fileName) {
 			await fs.promises.unlink(path.join(profileMediaDir, path.basename(prev.fileName))).catch(() => {});
 		}
@@ -774,7 +801,7 @@ app.get('/api/profile/media/:userId/:type', requireActiveUser, async (req, res, 
 	const col = type === 'avatar' ? 'avatar_name' : 'cover_name';
 	try {
 		const db = await databasePromise;
-		const row = await db.get(`SELECT ${col} AS fileName FROM users WHERE id=?`, req.params.userId);
+		const row = await db.get(`SELECT ${col} AS fileName FROM pengguna WHERE id=?`, req.params.userId);
 		if (!row?.fileName) return res.status(404).end();
 		const filePath = path.join(profileMediaDir, path.basename(row.fileName));
 		if (!fs.existsSync(filePath)) return res.status(404).end();
@@ -788,7 +815,7 @@ app.get('/api/profile/media/:userId/:type', requireActiveUser, async (req, res, 
 app.get('/api/profile/face', requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const row = await db.get('SELECT full_name AS name, face_descriptor FROM users WHERE id=?', req.user.id);
+		const row = await db.get('SELECT full_name AS name, face_descriptor FROM pengguna WHERE id=?', req.user.id);
 		if (!row || !row.face_descriptor) {
 			return res.json({ hasFace: false, descriptor: null, name: row?.name || req.user.name });
 		}
@@ -839,8 +866,8 @@ app.post('/api/profile/face', sameOrigin, requireActiveUser, async (req, res, ne
 			return res.status(422).json({ error: 'Data biometrik wajah tidak valid atau tidak terbaca dengan jelas.' });
 		}
 		const db = await databasePromise;
-		await db.run('UPDATE users SET face_descriptor=? WHERE id=?', JSON.stringify(descriptor), req.user.id);
-		await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+		await db.run('UPDATE pengguna SET face_descriptor=? WHERE id=?', JSON.stringify(descriptor), req.user.id);
+		await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
 			crypto.randomUUID(), req.user.id, 'Biometrik Wajah Aktif',
 			'Data biometrik wajah Anda berhasil didaftarkan untuk verifikasi absensi anti titip absen.');
 		res.json({ ok: true, message: 'Wajah Anda berhasil didaftarkan ke sistem! Kehadiran kini terverifikasi biometrik.' });
@@ -852,7 +879,7 @@ app.post('/api/profile/face', sameOrigin, requireActiveUser, async (req, res, ne
 app.delete('/api/profile/face', sameOrigin, requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		await db.run('UPDATE users SET face_descriptor=NULL WHERE id=?', req.user.id);
+		await db.run('UPDATE pengguna SET face_descriptor=NULL WHERE id=?', req.user.id);
 		res.json({ ok: true, message: 'Data wajah biometrik berhasil dihapus. Anda dapat mendaftarkan ulang kapan saja.' });
 	} catch (error) {
 		next(error);
@@ -872,7 +899,7 @@ app.get('/api/search', requireActiveUser, async (req, res, next) => {
 		const isCurrentAdmin = req.user.role === 'ADMIN';
 
 		let sql = `SELECT id,full_name AS name,role,detail,bio
-			FROM users WHERE status='AKTIF'
+			FROM pengguna WHERE status='AKTIF'
 			AND (?='' OR full_name LIKE ? OR detail LIKE ?)
 			AND (?='' OR role=?)`;
 		const params = [query ? escapedQuery : '', pattern, pattern, role, role];
@@ -899,7 +926,7 @@ app.get('/api/search', requireActiveUser, async (req, res, next) => {
 app.get('/api/search/:id/profile', requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const person = await db.get("SELECT id,full_name AS name,role,detail,bio FROM users WHERE id=? AND status='AKTIF'", req.params.id);
+		const person = await db.get("SELECT id,full_name AS name,role,detail,bio FROM pengguna WHERE id=? AND status='AKTIF'", req.params.id);
 		if (!person) return res.status(404).json({ error: 'Profil tidak ditemukan.' });
 		// Profil admin tidak ditampilkan di user siswa & guru
 		if (person.role === 'ADMIN' && req.user.role !== 'ADMIN') {
@@ -907,28 +934,28 @@ app.get('/api/search/:id/profile', requireActiveUser, async (req, res, next) => 
 		}
 		let canSeeAcademicMetrics = person.id === req.user.id || req.user.role === 'ADMIN';
 		if (!canSeeAcademicMetrics && req.user.role === 'GURU' && person.role === 'SISWA') {
-			canSeeAcademicMetrics = Boolean(await db.get('SELECT 1 FROM assignments WHERE created_by=? AND class_name=? LIMIT 1', req.user.id, person.detail));
+			canSeeAcademicMetrics = Boolean(await db.get('SELECT 1 FROM tugas WHERE created_by=? AND class_name=? LIMIT 1', req.user.id, person.detail));
 		}
-		const approvedAttendance = await db.get("SELECT COUNT(*) AS count FROM attendance WHERE user_id=? AND verification='DISETUJUI'", person.id);
+		const approvedAttendance = await db.get("SELECT COUNT(*) AS count FROM kehadiran WHERE user_id=? AND verification='DISETUJUI'", person.id);
 		let averageScore = null, rank = null;
 		if (canSeeAcademicMetrics && person.role === 'SISWA') {
 			const score = await db.get(`SELECT SUM(s.score) * 100.0 / NULLIF(SUM(a.max_score),0) AS average
-				FROM submissions s JOIN assignments a ON a.id=s.assignment_id
+				FROM pengumpulan s JOIN tugas a ON a.id=s.assignment_id
 				WHERE s.student_id=? AND s.score IS NOT NULL`, person.id);
 			averageScore = score.average === null ? null : Math.round(score.average * 10) / 10;
 			if (averageScore !== null) {
 				const ranking = await db.get(`WITH averages AS (
 					SELECT u.id, SUM(s.score) * 100.0 / NULLIF(SUM(a.max_score),0) AS average_score
-					FROM users u LEFT JOIN submissions s ON s.student_id=u.id
-					LEFT JOIN assignments a ON a.id=s.assignment_id
+					FROM pengguna u LEFT JOIN pengumpulan s ON s.student_id=u.id
+					LEFT JOIN tugas a ON a.id=s.assignment_id
 					WHERE u.status='AKTIF' AND u.role='SISWA' AND u.detail=?
 					GROUP BY u.id
 				), ranked AS (
 					SELECT id, RANK() OVER (ORDER BY average_score DESC) AS class_rank
 					FROM averages WHERE average_score IS NOT NULL
 				)
-				SELECT class_rank AS rank FROM ranked WHERE id=?`, person.detail, person.id);
-				rank = ranking?.rank ?? null;
+				SELECT class_rank FROM ranked WHERE id=?`, person.detail, person.id);
+				rank = ranking?.class_rank ?? null;
 			}
 		}
 		res.json({ person, canSeeAcademicMetrics, averageScore, rank, approvedAttendance: canSeeAcademicMetrics ? approvedAttendance.count : null });
@@ -940,7 +967,7 @@ app.get('/api/search/:id/profile', requireActiveUser, async (req, res, next) => 
 app.get('/api/notifications', requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const notifications = await db.all('SELECT id,title,message,created_at AS createdAt,is_read AS isRead FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 100', req.user.id);
+		const notifications = await db.all('SELECT id,title,message,created_at AS createdAt,is_read AS isRead FROM notifikasi WHERE user_id=? ORDER BY created_at DESC LIMIT 100', req.user.id);
 		res.json({ notifications });
 	} catch (error) {
 		next(error);
@@ -950,7 +977,7 @@ app.get('/api/notifications', requireActiveUser, async (req, res, next) => {
 app.patch('/api/notifications/read-all', sameOrigin, requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		await db.run('UPDATE notifications SET is_read=1 WHERE user_id=?', req.user.id);
+		await db.run('UPDATE notifikasi SET is_read=1 WHERE user_id=?', req.user.id);
 		res.json({ ok: true });
 	} catch (error) {
 		next(error);
@@ -960,7 +987,7 @@ app.patch('/api/notifications/read-all', sameOrigin, requireActiveUser, async (r
 app.patch('/api/notifications/:id/read', sameOrigin, requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const result = await db.run('UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?', req.params.id, req.user.id);
+		const result = await db.run('UPDATE notifikasi SET is_read=1 WHERE id=? AND user_id=?', req.params.id, req.user.id);
 		if (!result.changes) return res.status(404).json({ error: 'Notifikasi tidak ditemukan.' });
 		res.json({ ok: true });
 	} catch (error) {
@@ -979,9 +1006,9 @@ app.get('/api/posts', requireActiveUser, async (req, res, next) => {
 			u.detail AS realAuthorDetail,
 			u.identity_number AS realAuthorIdentity,
 			(p.author_id=?) AS isOwner,
-			(SELECT COUNT(*) FROM post_likes l WHERE l.post_id=p.id) AS likes,
-			EXISTS(SELECT 1 FROM post_likes l WHERE l.post_id=p.id AND l.user_id=?) AS liked
-			FROM posts p JOIN users u ON u.id=p.author_id ORDER BY p.created_at DESC LIMIT 50`, req.user.id, req.user.id);
+			(SELECT COUNT(*) FROM suka_postingan l WHERE l.post_id=p.id) AS likes,
+			EXISTS(SELECT 1 FROM suka_postingan l WHERE l.post_id=p.id AND l.user_id=?) AS liked
+			FROM postingan p JOIN pengguna u ON u.id=p.author_id ORDER BY p.created_at DESC LIMIT 50`, req.user.id, req.user.id);
 
 		for (const post of rows) {
 			post.canDelete = Boolean(post.isOwner || isAdmin);
@@ -1003,7 +1030,7 @@ app.get('/api/posts', requireActiveUser, async (req, res, next) => {
 
 			const comments = await db.all(`SELECT c.id,c.body,c.created_at AS createdAt,
 				cu.full_name AS realAuthorName, cu.role AS authorRole, cu.detail AS realAuthorDetail
-				FROM comments c JOIN users cu ON cu.id=c.author_id WHERE c.post_id=? ORDER BY c.created_at ASC`, post.id);
+				FROM komentar c JOIN pengguna cu ON cu.id=c.author_id WHERE c.post_id=? ORDER BY c.created_at ASC`, post.id);
 
 			post.comments = comments.map(c => {
 				const item = { id: c.id, body: c.body, createdAt: c.createdAt };
@@ -1025,23 +1052,26 @@ app.post('/api/posts', sameOrigin, requireActiveUser, postImageUpload.single('im
 	const title = (req.body.title || '').trim();
 	const body = (req.body.body || '').trim();
 	const parsed = postSchema.safeParse({ title, body });
-	if (!parsed.success) {
-		if (req.file) fs.unlink(req.file.path, () => {});
-		return res.status(422).json({ error: 'Judul atau isi topik tidak memenuhi batas karakter.' });
-	}
+	if (!parsed.success) return res.status(422).json({ error: 'Judul atau isi topik tidak memenuhi batas karakter.' });
+	let imageName = null, postInserted = false;
 	try {
 		const db = await databasePromise, id = crypto.randomUUID();
-		const imageName = req.file ? path.basename(req.file.filename) : null;
-		await db.run('INSERT INTO posts (id, author_id, title, body, image_name) VALUES (?, ?, ?, ?, ?)', id, req.user.id, parsed.data.title, parsed.data.body, imageName);
-		const otherUsers = await db.all("SELECT id FROM users WHERE status='AKTIF' AND id<>?", req.user.id);
+		if (req.file) {
+			const ext = path.extname(req.file.originalname).toLowerCase().replace(/[^a-zA-Z0-9.]/g, '').slice(0, 10) || '.jpg';
+			imageName = `${id}${ext}`;
+			await writeFileAtomic(path.join(postImageDir, imageName), req.file.buffer);
+		}
+		await db.run('INSERT INTO postingan (id, author_id, title, body, image_name) VALUES (?, ?, ?, ?, ?)', id, req.user.id, parsed.data.title, parsed.data.body, imageName);
+		postInserted = true;
+		const otherUsers = await db.all("SELECT id FROM pengguna WHERE status='AKTIF' AND id<>?", req.user.id);
 		const snippet = parsed.data.body.length > 100 ? parsed.data.body.slice(0, 97) + '...' : parsed.data.body;
 		for (const u of otherUsers) {
-			await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
 				crypto.randomUUID(), u.id, `Pesan Baru: ${parsed.data.title}`, snippet);
 		}
 		res.status(201).json({ id, imageName });
 	} catch (error) {
-		if (req.file) fs.unlink(req.file.path, () => {});
+		if (imageName && !postInserted) fs.promises.unlink(path.join(postImageDir, imageName)).catch(() => {});
 		next(error);
 	}
 });
@@ -1049,7 +1079,7 @@ app.post('/api/posts', sameOrigin, requireActiveUser, postImageUpload.single('im
 app.get('/api/posts/:id/image', requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const post = await db.get('SELECT image_name FROM posts WHERE id=?', req.params.id);
+		const post = await db.get('SELECT image_name FROM postingan WHERE id=?', req.params.id);
 		if (!post || !post.image_name) return res.status(404).json({ error: 'Gambar tidak ditemukan.' });
 		const filePath = path.join(postImageDir, path.basename(post.image_name));
 		if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File gambar tidak ditemukan di server.' });
@@ -1062,14 +1092,14 @@ app.get('/api/posts/:id/image', requireActiveUser, async (req, res, next) => {
 app.post('/api/posts/:id/like', sameOrigin, requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const post = await db.get('SELECT id, author_id, title FROM posts WHERE id=?', req.params.id);
+		const post = await db.get('SELECT id, author_id, title FROM postingan WHERE id=?', req.params.id);
 		if (!post) return res.status(404).json({ error: 'Topik tidak ditemukan.' });
-		const existing = await db.get('SELECT 1 FROM post_likes WHERE post_id=? AND user_id=?', req.params.id, req.user.id);
-		if (existing) await db.run('DELETE FROM post_likes WHERE post_id=? AND user_id=?', req.params.id, req.user.id);
+		const existing = await db.get('SELECT 1 FROM suka_postingan WHERE post_id=? AND user_id=?', req.params.id, req.user.id);
+		if (existing) await db.run('DELETE FROM suka_postingan WHERE post_id=? AND user_id=?', req.params.id, req.user.id);
 		else {
-			await db.run('INSERT INTO post_likes (post_id,user_id) VALUES (?,?)', req.params.id, req.user.id);
+			await db.run('INSERT INTO suka_postingan (post_id,user_id) VALUES (?,?)', req.params.id, req.user.id);
 			if (post.author_id && post.author_id !== req.user.id) {
-				await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+				await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
 					crypto.randomUUID(), post.author_id, 'Suka Baru pada Topik',
 					`Seseorang menyukai topik Anda "${post.title}".`);
 			}
@@ -1085,18 +1115,18 @@ app.post('/api/posts/:id/comments', sameOrigin, requireActiveUser, async (req, r
 	if (!parsed.success) return res.status(422).json({ error: 'Komentar wajib diisi dan maksimal 500 karakter.' });
 	try {
 		const db = await databasePromise;
-		const post = await db.get('SELECT id, author_id, title FROM posts WHERE id=?', req.params.id);
+		const post = await db.get('SELECT id, author_id, title FROM postingan WHERE id=?', req.params.id);
 		if (!post) return res.status(404).json({ error: 'Topik tidak ditemukan.' });
-		await db.run('INSERT INTO comments (id,post_id,author_id,body,is_anonymous) VALUES (?,?,?,?,1)', crypto.randomUUID(), req.params.id, req.user.id, parsed.data.body);
+		await db.run('INSERT INTO komentar (id,post_id,author_id,body,is_anonymous) VALUES (?,?,?,?,1)', crypto.randomUUID(), req.params.id, req.user.id, parsed.data.body);
 		const snippet = parsed.data.body.length > 100 ? parsed.data.body.slice(0, 97) + '...' : parsed.data.body;
 		if (post.author_id && post.author_id !== req.user.id) {
-			await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
 				crypto.randomUUID(), post.author_id, `Komentar Baru: ${post.title}`, snippet);
 		}
-		const participants = await db.all('SELECT DISTINCT author_id FROM comments WHERE post_id=? AND author_id<>? AND author_id<>?',
+		const participants = await db.all('SELECT DISTINCT author_id FROM komentar WHERE post_id=? AND author_id<>? AND author_id<>?',
 			req.params.id, req.user.id, post.author_id || '');
 		for (const p of participants) {
-			await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
 				crypto.randomUUID(), p.author_id, `Balasan Komentar: ${post.title}`, snippet);
 		}
 		res.status(201).json({ ok: true });
@@ -1108,7 +1138,7 @@ app.post('/api/posts/:id/comments', sameOrigin, requireActiveUser, async (req, r
 app.delete('/api/posts/:id', sameOrigin, requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const post = await db.get('SELECT author_id,created_at,image_name FROM posts WHERE id=?', req.params.id);
+		const post = await db.get('SELECT author_id,created_at,image_name FROM postingan WHERE id=?', req.params.id);
 		if (!post) return res.status(404).json({ error: 'Topik tidak ditemukan.' });
 		
 		let createdAtMs = 0;
@@ -1124,9 +1154,9 @@ app.delete('/api/posts/:id', sameOrigin, requireActiveUser, async (req, res, nex
 		if (req.user.role !== 'ADMIN' && (post.author_id !== req.user.id || age > 24 * 60 * 60 * 1000)) {
 			return res.status(403).json({ error: 'Topik ini tidak dapat dihapus oleh akun Anda.' });
 		}
-		await db.run('DELETE FROM comments WHERE post_id=?', req.params.id);
-		await db.run('DELETE FROM post_likes WHERE post_id=?', req.params.id);
-		await db.run('DELETE FROM posts WHERE id=?', req.params.id);
+		await db.run('DELETE FROM komentar WHERE post_id=?', req.params.id);
+		await db.run('DELETE FROM suka_postingan WHERE post_id=?', req.params.id);
+		await db.run('DELETE FROM postingan WHERE id=?', req.params.id);
 		if (post.image_name) {
 			fs.unlink(path.join(postImageDir, path.basename(post.image_name)), () => {});
 		}
@@ -1140,25 +1170,25 @@ app.get('/api/assignments', requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
 		let assignments = [];
-		const classRows = await db.all("SELECT name FROM classes ORDER BY name ASC");
+		const classRows = await db.all("SELECT name FROM kelas ORDER BY name ASC");
 		const availableClasses = ['Semua Kelas', ...classRows.map(r => r.name)];
 
 		if (req.user.role === 'ADMIN') {
 			assignments = await db.all(`
 				SELECT a.id, a.title, a.instructions AS description, a.subject, a.class_name AS class, a.category, a.due_at AS due, a.max_score AS maxScore, u.full_name AS teacherName,
 				       a.attachment_name AS attachmentName, a.attachment_original_name AS attachmentOriginalName,
-				       (SELECT COUNT(*) FROM submissions s WHERE s.assignment_id = a.id) AS submissionCount
-				FROM assignments a
-				LEFT JOIN users u ON u.id = a.created_by
+				       (SELECT COUNT(*) FROM pengumpulan s WHERE s.assignment_id = a.id) AS submissionCount
+				FROM tugas a
+				LEFT JOIN pengguna u ON u.id = a.created_by
 				ORDER BY a.due_at ASC
 			`);
 		} else if (req.user.role === 'GURU') {
 			assignments = await db.all(`
 				SELECT a.id, a.title, a.instructions AS description, a.subject, a.class_name AS class, a.category, a.due_at AS due, a.max_score AS maxScore, u.full_name AS teacherName,
 				       a.attachment_name AS attachmentName, a.attachment_original_name AS attachmentOriginalName,
-				       (SELECT COUNT(*) FROM submissions s WHERE s.assignment_id = a.id) AS submissionCount
-				FROM assignments a
-				LEFT JOIN users u ON u.id = a.created_by
+				       (SELECT COUNT(*) FROM pengumpulan s WHERE s.assignment_id = a.id) AS submissionCount
+				FROM tugas a
+				LEFT JOIN pengguna u ON u.id = a.created_by
 				WHERE a.created_by=?
 				ORDER BY a.due_at ASC
 			`, req.user.id);
@@ -1169,9 +1199,9 @@ app.get('/api/assignments', requireActiveUser, async (req, res, next) => {
 				       a.attachment_name AS attachmentName, a.attachment_original_name AS attachmentOriginalName,
 				       s.id AS submissionId, s.submitted_at AS submittedAt, s.file_name AS fileName, s.file_original_name AS fileOriginalName,
 				       s.score, s.feedback, s.answer_text AS answerText
-				FROM assignments a
-				LEFT JOIN users u ON u.id = a.created_by
-				LEFT JOIN submissions s ON s.assignment_id = a.id AND s.student_id = ?
+				FROM tugas a
+				LEFT JOIN pengguna u ON u.id = a.created_by
+				LEFT JOIN pengumpulan s ON s.assignment_id = a.id AND s.student_id = ?
 				WHERE LOWER(TRIM(a.class_name)) = LOWER(TRIM(?))
 				   OR LOWER(TRIM(a.class_name)) = 'semua'
 				   OR LOWER(TRIM(a.class_name)) = 'semua kelas'
@@ -1188,7 +1218,6 @@ app.get('/api/assignments', requireActiveUser, async (req, res, next) => {
 
 app.post('/api/assignments', sameOrigin, requireActiveUser, assignmentUpload.single('attachment'), async (req, res, next) => {
 	if (!['GURU', 'ADMIN'].includes(req.user.role)) {
-		if (req.file) fs.unlink(req.file.path, () => {});
 		return res.status(403).json({ error: 'Hanya guru yang dapat membuat tugas.' });
 	}
 	const taskPayload = {
@@ -1202,19 +1231,24 @@ app.post('/api/assignments', sameOrigin, requireActiveUser, assignmentUpload.sin
 	};
 	const parsed = assignmentSchema.safeParse(taskPayload);
 	if (!parsed.success) {
-		if (req.file) fs.unlink(req.file.path, () => {});
 		return res.status(422).json({ error: 'Data tugas tidak valid.' });
 	}
+	let attachmentName = null, taskInserted = false;
 	try {
 		const task = parsed.data, id = crypto.randomUUID(), db = await databasePromise;
-		const attachmentName = req.file ? path.basename(req.file.filename) : null;
 		const attachmentOriginalName = req.file ? req.file.originalname : null;
-		await db.run('INSERT INTO assignments (id,title,instructions,subject,class_name,category,due_at,max_score,created_by,attachment_name,attachment_original_name) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+		if (req.file) {
+			const ext = path.extname(req.file.originalname).toLowerCase().replace(/[^a-zA-Z0-9.]/g, '').slice(0, 12);
+			attachmentName = `${id}${ext}`;
+			await writeFileAtomic(path.join(assignmentAttachmentDir, attachmentName), req.file.buffer);
+		}
+		await db.run('INSERT INTO tugas (id,title,instructions,subject,class_name,category,due_at,max_score,created_by,attachment_name,attachment_original_name) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
 			id, task.title, task.instructions, task.subject, task.className, task.category, task.dueAt, task.maxScore, req.user.id, attachmentName, attachmentOriginalName);
+		taskInserted = true;
 		await notifyClassStudents(db, task.className, `Tugas Baru: ${task.title}`, `${task.subject} (${task.category}) untuk ${task.className}. Tenggat: ${task.dueAt.slice(0, 10)}`);
 		res.status(201).json({ id, attachmentName, attachmentOriginalName });
 	} catch (error) {
-		if (req.file) fs.unlink(req.file.path, () => {});
+		if (attachmentName && !taskInserted) fs.promises.unlink(path.join(assignmentAttachmentDir, attachmentName)).catch(() => {});
 		next(error);
 	}
 });
@@ -1222,7 +1256,7 @@ app.post('/api/assignments', sameOrigin, requireActiveUser, assignmentUpload.sin
 app.get('/api/assignments/:id/attachment', requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const assignment = await db.get('SELECT attachment_name, attachment_original_name FROM assignments WHERE id=?', req.params.id);
+		const assignment = await db.get('SELECT attachment_name, attachment_original_name FROM tugas WHERE id=?', req.params.id);
 		if (!assignment || !assignment.attachment_name) return res.status(404).json({ error: 'Lampiran berkas tidak ditemukan.' });
 		const filePath = path.join(assignmentAttachmentDir, path.basename(assignment.attachment_name));
 		if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File lampiran tidak ditemukan di server.' });
@@ -1238,12 +1272,12 @@ app.delete('/api/assignments/:id', sameOrigin, requireActiveUser, async (req, re
 	}
 	try {
 		const db = await databasePromise;
-		const assignment = await db.get('SELECT id, attachment_name FROM assignments WHERE id=?', req.params.id);
+		const assignment = await db.get('SELECT id, attachment_name FROM tugas WHERE id=?', req.params.id);
 		if (!assignment) return res.status(404).json({ error: 'Tugas tidak ditemukan.' });
 
-		const subs = await db.all('SELECT file_name FROM submissions WHERE assignment_id=?', req.params.id);
-		await db.run('DELETE FROM submissions WHERE assignment_id=?', req.params.id);
-		await db.run('DELETE FROM assignments WHERE id=?', req.params.id);
+		const subs = await db.all('SELECT file_name FROM pengumpulan WHERE assignment_id=?', req.params.id);
+		await db.run('DELETE FROM pengumpulan WHERE assignment_id=?', req.params.id);
+		await db.run('DELETE FROM tugas WHERE id=?', req.params.id);
 
 		if (assignment.attachment_name) {
 			await fs.promises.unlink(path.join(assignmentAttachmentDir, path.basename(assignment.attachment_name))).catch(() => {});
@@ -1270,45 +1304,45 @@ app.post('/api/assignments/:id/submit', sameOrigin, requireActiveUser, submissio
 		return res.status(422).json({ error: 'Harap lampirkan file tugas atau tulis catatan pengerjaan.' });
 	}
 
+	let fileName = null, submissionSaved = false;
 	try {
 		const db = await databasePromise;
-		const assignment = await db.get('SELECT id, title, created_by FROM assignments WHERE id = ?', assignmentId);
+		const assignment = await db.get('SELECT id, title, created_by FROM tugas WHERE id = ?', assignmentId);
 		if (!assignment) return res.status(404).json({ error: 'Tugas tidak ditemukan.' });
 
-		const existing = await db.get('SELECT id, file_name FROM submissions WHERE assignment_id = ? AND student_id = ?', assignmentId, req.user.id);
-
-		let fileName = null;
+		const existing = await db.get('SELECT id, file_name FROM pengumpulan WHERE assignment_id = ? AND student_id = ?', assignmentId, req.user.id);
 		let fileOriginalName = null;
 		if (file) {
-			fileName = file.filename;
+			const ext = path.extname(file.originalname).toLowerCase().replace(/[^a-zA-Z0-9.]/g, '').slice(0, 12);
+			fileName = `${crypto.randomUUID()}${ext}`;
 			fileOriginalName = file.originalname;
-			if (existing?.file_name) {
-				await fs.promises.unlink(path.join(submissionDir, existing.file_name)).catch(() => {});
-			}
+			await writeFileAtomic(path.join(submissionDir, fileName), file.buffer);
 		}
 
 		if (existing) {
 			if (file) {
-				await db.run('UPDATE submissions SET answer_text = ?, file_name = ?, file_original_name = ?, submitted_at = CURRENT_TIMESTAMP WHERE id = ?', answerText, fileName, fileOriginalName, existing.id);
+				await db.run('UPDATE pengumpulan SET answer_text = ?, file_name = ?, file_original_name = ?, submitted_at = CURRENT_TIMESTAMP WHERE id = ?', answerText, fileName, fileOriginalName, existing.id);
 			} else {
-				await db.run('UPDATE submissions SET answer_text = ?, submitted_at = CURRENT_TIMESTAMP WHERE id = ?', answerText, existing.id);
+				await db.run('UPDATE pengumpulan SET answer_text = ?, submitted_at = CURRENT_TIMESTAMP WHERE id = ?', answerText, existing.id);
 			}
 		} else {
 			const id = crypto.randomUUID();
-			await db.run('INSERT INTO submissions (id, assignment_id, student_id, answer_text, file_name, file_original_name, feedback) VALUES (?,?,?,?,?,?,?)',
+			await db.run('INSERT INTO pengumpulan (id, assignment_id, student_id, answer_text, file_name, file_original_name, feedback) VALUES (?,?,?,?,?,?,?)',
 				id, assignmentId, req.user.id, answerText, fileName, fileOriginalName, '');
+		}
+		submissionSaved = true;
+		if (file && existing?.file_name && existing.file_name !== fileName) {
+			await fs.promises.unlink(path.join(submissionDir, path.basename(existing.file_name))).catch(() => {});
 		}
 
 		if (assignment.created_by) {
-			await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
 				crypto.randomUUID(), assignment.created_by, 'Pengumpulan tugas baru', `${req.user.full_name || req.user.name || 'Siswa'} (${req.user.detail || 'Siswa'}) telah mengumpulkan tugas: ${assignment.title}`);
 		}
 
 		res.json({ ok: true, message: 'Tugas berhasil dikumpulkan.' });
 	} catch (error) {
-		if (file?.filename) {
-			await fs.promises.unlink(path.join(submissionDir, file.filename)).catch(() => {});
-		}
+		if (fileName && !submissionSaved) fs.promises.unlink(path.join(submissionDir, fileName)).catch(() => {});
 		next(error);
 	}
 });
@@ -1319,7 +1353,7 @@ app.get('/api/assignments/:id/submissions', requireActiveUser, async (req, res, 
 	}
 	try {
 		const db = await databasePromise;
-		const assignment = await db.get('SELECT id, title, created_by, max_score, class_name FROM assignments WHERE id = ?', req.params.id);
+		const assignment = await db.get('SELECT id, title, created_by, max_score, class_name FROM tugas WHERE id = ?', req.params.id);
 		if (!assignment) return res.status(404).json({ error: 'Tugas tidak ditemukan.' });
 		if (req.user.role === 'GURU' && assignment.created_by !== req.user.id) {
 			return res.status(403).json({ error: 'Anda hanya dapat melihat pengumpulan tugas yang Anda buat.' });
@@ -1330,8 +1364,8 @@ app.get('/api/assignments/:id/submissions', requireActiveUser, async (req, res, 
 			       u.full_name AS studentName, u.email AS studentEmail, u.detail AS studentClass, u.identity_number AS identityNumber,
 			       s.answer_text AS answerText, s.file_name AS fileName, s.file_original_name AS fileOriginalName,
 			       s.score, s.feedback, s.submitted_at AS submittedAt
-			FROM submissions s
-			JOIN users u ON u.id = s.student_id
+			FROM pengumpulan s
+			JOIN pengguna u ON u.id = s.student_id
 			WHERE s.assignment_id = ?
 			ORDER BY s.submitted_at DESC
 		`, req.params.id);
@@ -1347,8 +1381,8 @@ app.get('/api/submissions/:id/file', requireActiveUser, async (req, res, next) =
 		const db = await databasePromise;
 		const sub = await db.get(`
 			SELECT s.file_name, s.file_original_name, s.student_id, a.created_by
-			FROM submissions s
-			JOIN assignments a ON a.id = s.assignment_id
+			FROM pengumpulan s
+			JOIN tugas a ON a.id = s.assignment_id
 			WHERE s.id = ?
 		`, req.params.id);
 
@@ -1384,8 +1418,8 @@ app.patch('/api/submissions/:id/grade', sameOrigin, requireActiveUser, async (re
 		const db = await databasePromise;
 		const sub = await db.get(`
 			SELECT s.id, s.student_id, a.created_by, a.title
-			FROM submissions s
-			JOIN assignments a ON a.id = s.assignment_id
+			FROM pengumpulan s
+			JOIN tugas a ON a.id = s.assignment_id
 			WHERE s.id = ?
 		`, req.params.id);
 
@@ -1394,10 +1428,10 @@ app.patch('/api/submissions/:id/grade', sameOrigin, requireActiveUser, async (re
 			return res.status(403).json({ error: 'Anda tidak memiliki hak menilai tugas ini.' });
 		}
 
-		await db.run('UPDATE submissions SET score = ?, feedback = ? WHERE id = ?', score, feedback, req.params.id);
+		await db.run('UPDATE pengumpulan SET score = ?, feedback = ? WHERE id = ?', score, feedback, req.params.id);
 
 		if (score !== null) {
-			await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
 				crypto.randomUUID(), sub.student_id, 'Tugas telah dinilai', `Tugas "${sub.title}" dinilai ${score}. Catatan guru: ${feedback || 'Tidak ada catatan.'}`);
 		}
 
@@ -1419,17 +1453,17 @@ app.get('/api/admin/reports', requireActiveUser, requireAdmin, async (req, res, 
 				SUM(CASE WHEN role='GURU' AND status='AKTIF' THEN 1 ELSE 0 END) AS activeTeachers,
 				SUM(CASE WHEN role='STAF' AND status='AKTIF' THEN 1 ELSE 0 END) AS activeStaff,
 				SUM(CASE WHEN face_descriptor IS NOT NULL THEN 1 ELSE 0 END) AS faceRegistered
-				FROM users`),
-			db.all('SELECT verification, COUNT(*) AS total FROM attendance WHERE day=? GROUP BY verification', today),
-			db.get('SELECT COUNT(*) AS total FROM attendance'),
+				FROM pengguna`),
+			db.all('SELECT verification, COUNT(*) AS total FROM kehadiran WHERE day=? GROUP BY verification', today),
+			db.get('SELECT COUNT(*) AS total FROM kehadiran'),
 			db.get(`SELECT
 				COUNT(*) AS totalTasks,
 				SUM(CASE WHEN due_at >= NOW() THEN 1 ELSE 0 END) AS activeTasks,
 				SUM(CASE WHEN due_at < NOW() THEN 1 ELSE 0 END) AS overdueTasks
-				FROM assignments`),
-			db.get('SELECT COUNT(*) AS totalSubmissions, SUM(CASE WHEN score IS NOT NULL THEN 1 ELSE 0 END) AS gradedSubmissions FROM submissions'),
-			db.get('SELECT COUNT(*) AS totalPosts FROM posts'),
-			db.get('SELECT COUNT(*) AS totalComments FROM comments')
+				FROM tugas`),
+			db.get('SELECT COUNT(*) AS totalSubmissions, SUM(CASE WHEN score IS NOT NULL THEN 1 ELSE 0 END) AS gradedSubmissions FROM pengumpulan'),
+			db.get('SELECT COUNT(*) AS totalPosts FROM postingan'),
+			db.get('SELECT COUNT(*) AS totalComments FROM komentar')
 		]);
 
 		const attMap = { DISETUJUI: 0, MENUNGGU: 0, DITOLAK: 0 };
@@ -1476,7 +1510,7 @@ app.get('/api/admin/reports', requireActiveUser, requireAdmin, async (req, res, 
 app.get('/api/attendance/settings', requireActiveUser, async (_, res, next) => {
 	try {
 		const db = await databasePromise;
-		res.json({ settings: await db.get('SELECT latitude,longitude,radius_meters AS radiusMeters,open_time AS openTime,close_time AS closeTime,late_after AS lateAfter FROM school_settings WHERE id=1') });
+		res.json({ settings: await db.get('SELECT latitude,longitude,radius_meters AS radiusMeters,open_time AS openTime,close_time AS closeTime,late_after AS lateAfter FROM pengaturan_sekolah WHERE id=1') });
 	} catch (error) {
 		next(error);
 	}
@@ -1487,7 +1521,7 @@ app.put('/api/admin/attendance/settings', sameOrigin, requireActiveUser, require
 	if (!parsed.success) return res.status(422).json({ error: 'Pengaturan lokasi/jam tidak valid.' });
 	try {
 		const value = parsed.data, db = await databasePromise;
-		await db.run('UPDATE school_settings SET latitude=?,longitude=?,radius_meters=?,open_time=?,close_time=?,late_after=? WHERE id=1', value.latitude, value.longitude, value.radiusMeters, value.openTime, value.closeTime, value.lateAfter);
+		await db.run('UPDATE pengaturan_sekolah SET latitude=?,longitude=?,radius_meters=?,open_time=?,close_time=?,late_after=? WHERE id=1', value.latitude, value.longitude, value.radiusMeters, value.openTime, value.closeTime, value.lateAfter);
 		res.json({ ok: true });
 	} catch (error) {
 		next(error);
@@ -1499,10 +1533,12 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 	const extension = getImageExtension(req.file.buffer, req.file.mimetype);
 	if (!extension) return res.status(422).json({ error: 'Isi file bukan foto JPEG, PNG, atau WebP yang valid.' });
 	const latitude = Number(req.body.latitude), longitude = Number(req.body.longitude), accuracy = Number(req.body.accuracy);
-	if (![latitude, longitude, accuracy].every(Number.isFinite) || accuracy > 10000 || accuracy < 0) return res.status(422).json({ error: 'Lokasi belum valid atau tidak terbaca.' });
+	if (![latitude, longitude, accuracy].every(Number.isFinite) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 || accuracy > 100 || accuracy < 0) {
+		return res.status(422).json({ error: 'Lokasi tidak valid atau akurasi GPS melebihi 100 meter.' });
+	}
 	try {
-		const db = await databasePromise, settings = await db.get('SELECT * FROM school_settings WHERE id=1');
-		const userFace = await db.get('SELECT face_descriptor FROM users WHERE id=?', req.user.id);
+		const db = await databasePromise, settings = await db.get('SELECT * FROM pengaturan_sekolah WHERE id=1');
+		const userFace = await db.get('SELECT face_descriptor FROM pengguna WHERE id=?', req.user.id);
 		const storedDescriptor = parseFaceDescriptor(userFace?.face_descriptor);
 		if (!storedDescriptor) {
 			return res.status(403).json({ error: 'Data wajah biometrik akun Anda belum terdaftar. Harap daftarkan wajah di menu Profil terlebih dahulu agar kehadiran dapat diverifikasi.' });
@@ -1516,25 +1552,25 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 			return res.status(403).json({ error: 'Wajah tidak cocok dengan pemilik akun. Titip absen ditolak oleh sistem!' });
 		}
 		const distance = haversineMeters(latitude, longitude, settings.latitude, settings.longitude);
-		if (isProduction && distance > settings.radius_meters) return res.status(403).json({ error: `Di luar radius sekolah (${Math.round(distance)} meter).` });
+		if (distance > settings.radius_meters) return res.status(403).json({ error: `Di luar radius sekolah (${Math.round(distance)} meter).` });
 		const now = new Date(), localTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now);
 		if (isProduction && (localTime < settings.open_time || localTime > settings.close_time)) return res.status(403).json({ error: `Absen dibuka pukul ${settings.open_time}–${settings.close_time} WIB.` });
 		const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
-		const existing = await db.get('SELECT id, photo_name FROM attendance WHERE user_id=? AND day=?', req.user.id, day);
+		const existing = await db.get('SELECT id, photo_name FROM kehadiran WHERE user_id=? AND day=?', req.user.id, day);
 		if (existing) {
 			const photoName = `${existing.id}${extension}`;
-			await fs.promises.writeFile(path.join(photoDir, photoName), req.file.buffer, { flag: 'w', mode: 0o600 });
-			await db.run('UPDATE attendance SET photo_name=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="DISETUJUI" WHERE id=?', photoName, latitude, longitude, accuracy, now.toISOString(), existing.id);
-			await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+			await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer, true);
+			await db.run('UPDATE kehadiran SET photo_name=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="DISETUJUI" WHERE id=?', photoName, latitude, longitude, accuracy, now.toISOString(), existing.id);
+			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
 				crypto.randomUUID(), req.user.id, 'Kehadiran Terverifikasi Otomatis',
 				`Foto kehadiran dan wajah Anda untuk tanggal ${day} berhasil diperbarui dan diverifikasi otomatis oleh sistem.`);
 			return res.status(200).json({ id: existing.id, verification: 'DISETUJUI', capturedAt: now.toISOString(), message: 'Foto kehadiran berhasil diperbarui dan diverifikasi otomatis oleh sistem.' });
 		}
 		const id = crypto.randomUUID(), photoName = `${id}${extension}`;
-		await fs.promises.writeFile(path.join(photoDir, photoName), req.file.buffer, { flag: 'wx', mode: 0o600 });
+		await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer);
 		try {
-			await db.run('INSERT INTO attendance (id,user_id,day,photo_name,latitude,longitude,accuracy,captured_at,verification) VALUES (?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, latitude, longitude, accuracy, now.toISOString(), 'DISETUJUI');
-			await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+			await db.run('INSERT INTO kehadiran (id,user_id,day,photo_name,latitude,longitude,accuracy,captured_at,verification) VALUES (?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, latitude, longitude, accuracy, now.toISOString(), 'DISETUJUI');
+			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
 				crypto.randomUUID(), req.user.id, 'Kehadiran Terverifikasi Otomatis',
 				`Wajah dan lokasi kehadiran Anda untuk tanggal ${day} berhasil diverifikasi otomatis oleh sistem.`);
 		} catch (error) {
@@ -1551,7 +1587,7 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 app.get('/api/attendance/mine', requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		res.json({ attendance: await db.all('SELECT id,day,captured_at AS capturedAt,verification FROM attendance WHERE user_id=? ORDER BY captured_at DESC LIMIT 60', req.user.id) });
+		res.json({ attendance: await db.all('SELECT id,day,captured_at AS capturedAt,verification FROM kehadiran WHERE user_id=? ORDER BY captured_at DESC LIMIT 60', req.user.id) });
 	} catch (error) {
 		next(error);
 	}
@@ -1559,7 +1595,7 @@ app.get('/api/attendance/mine', requireActiveUser, async (req, res, next) => {
 
 app.get('/api/attendance/:id/photo', requireActiveUser, async (req, res, next) => {
 	try {
-		const db = await databasePromise, record = await db.get('SELECT user_id,photo_name FROM attendance WHERE id=?', req.params.id);
+		const db = await databasePromise, record = await db.get('SELECT user_id,photo_name FROM kehadiran WHERE id=?', req.params.id);
 		if (!record || (record.user_id !== req.user.id && req.user.role !== 'ADMIN')) return res.status(404).json({ error: 'Foto tidak ditemukan.' });
 		const photoPath = path.join(photoDir, path.basename(record.photo_name));
 		if (!fs.existsSync(photoPath)) return res.status(404).json({ error: 'File foto tidak ditemukan.' });
@@ -1572,9 +1608,9 @@ app.get('/api/attendance/:id/photo', requireActiveUser, async (req, res, next) =
 
 app.delete('/api/attendance/:id', sameOrigin, requireActiveUser, async (req, res, next) => {
 	try {
-		const db = await databasePromise, record = await db.get('SELECT user_id,photo_name,verification FROM attendance WHERE id=?', req.params.id);
+		const db = await databasePromise, record = await db.get('SELECT user_id,photo_name,verification FROM kehadiran WHERE id=?', req.params.id);
 		if (!record || record.user_id !== req.user.id || record.verification !== 'MENUNGGU') return res.status(404).json({ error: 'Foto tidak dapat dihapus.' });
-		await db.run('DELETE FROM attendance WHERE id=?', req.params.id);
+		await db.run('DELETE FROM kehadiran WHERE id=?', req.params.id);
 		await fs.promises.unlink(path.join(photoDir, path.basename(record.photo_name))).catch(() => {});
 		res.json({ ok: true });
 	} catch (error) {
@@ -1586,7 +1622,7 @@ app.get('/api/admin/attendance', requireActiveUser, requireAdmin, async (_, res,
 	try {
 		const db = await databasePromise;
 		res.json({ attendance: await db.all(`SELECT a.id,a.day,a.captured_at AS capturedAt,a.verification,a.latitude,a.longitude,a.accuracy,u.full_name AS name,u.email,u.role,u.detail AS detail
-			FROM attendance a JOIN users u ON u.id=a.user_id ORDER BY a.captured_at DESC LIMIT 500`) });
+			FROM kehadiran a JOIN pengguna u ON u.id=a.user_id ORDER BY a.captured_at DESC LIMIT 500`) });
 	} catch (error) {
 		next(error);
 	}
@@ -1597,11 +1633,11 @@ app.patch('/api/admin/attendance/:id', sameOrigin, requireActiveUser, requireAdm
 	if (!parsed.success) return res.status(422).json({ error: 'Keputusan tidak valid.' });
 	try {
 		const db = await databasePromise;
-		const record = await db.get('SELECT user_id, day FROM attendance WHERE id=?', req.params.id);
+		const record = await db.get('SELECT user_id, day FROM kehadiran WHERE id=?', req.params.id);
 		if (!record) return res.status(404).json({ error: 'Pengajuan kehadiran tidak ditemukan.' });
-		const result = await db.run('UPDATE attendance SET verification=? WHERE id=?', parsed.data.verification, req.params.id);
+		const result = await db.run('UPDATE kehadiran SET verification=? WHERE id=?', parsed.data.verification, req.params.id);
 		if (!result.changes) return res.status(404).json({ error: 'Pengajuan tidak ditemukan atau sudah diputuskan.' });
-		await db.run('INSERT INTO notifications (id,user_id,title,message) VALUES (?,?,?,?)',
+		await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
 			crypto.randomUUID(), record.user_id, 'Status Kehadiran',
 			`Foto kehadiran Anda tanggal ${record.day} telah diverifikasi dengan status: ${parsed.data.verification}.`
 		);
@@ -1615,7 +1651,7 @@ app.patch('/api/admin/attendance/:id', sameOrigin, requireActiveUser, requireAdm
 app.get('/api/classes', async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const rows = await db.all('SELECT id, name FROM classes ORDER BY name ASC');
+		const rows = await db.all('SELECT id, name FROM kelas ORDER BY name ASC');
 		res.json({ classes: rows, classNames: rows.map(r => r.name) });
 	} catch (error) {
 		next(error);
@@ -1627,9 +1663,9 @@ app.post('/api/classes', sameOrigin, requireActiveUser, requireAdmin, async (req
 	if (name.length < 2 || name.length > 60) return res.status(422).json({ error: 'Nama kelas minimal 2 dan maksimal 60 karakter.' });
 	try {
 		const db = await databasePromise;
-		const existing = await db.get('SELECT id FROM classes WHERE LOWER(name) = LOWER(?)', name);
+		const existing = await db.get('SELECT id FROM kelas WHERE LOWER(name) = LOWER(?)', name);
 		if (existing) return res.status(409).json({ error: 'Kelas sudah ada di dalam sistem.' });
-		const result = await db.run('INSERT INTO classes (name) VALUES (?)', name);
+		const result = await db.run('INSERT INTO kelas (name) VALUES (?)', name);
 		res.status(201).json({ id: result.lastID, name });
 	} catch (error) {
 		next(error);
@@ -1639,9 +1675,9 @@ app.post('/api/classes', sameOrigin, requireActiveUser, requireAdmin, async (req
 app.delete('/api/classes/:id', sameOrigin, requireActiveUser, requireAdmin, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		const cls = await db.get('SELECT id, name FROM classes WHERE id=?', req.params.id);
+		const cls = await db.get('SELECT id, name FROM kelas WHERE id=?', req.params.id);
 		if (!cls) return res.status(404).json({ error: 'Kelas tidak ditemukan.' });
-		await db.run('DELETE FROM classes WHERE id=?', req.params.id);
+		await db.run('DELETE FROM kelas WHERE id=?', req.params.id);
 		res.json({ ok: true, message: `Kelas ${cls.name} berhasil dihapus.` });
 	} catch (error) {
 		next(error);
@@ -1670,10 +1706,10 @@ async function start() {
 	if (isProduction && (!adminEmail || !adminPassword || !process.env.SESSION_SECRET || !process.env.APP_URL)) {
 		throw new Error('Production needs APP_URL, SESSION_SECRET, and initial admin credentials.');
 	}
-	const existing = adminEmail ? await db.get('SELECT id FROM users WHERE LOWER(email) = LOWER(?)', adminEmail) : null;
+	const existing = adminEmail ? await db.get('SELECT id FROM pengguna WHERE LOWER(email) = LOWER(?)', adminEmail) : null;
 	if (!existing) {
 		const id = crypto.randomUUID(), hash = await bcrypt.hash(adminPassword, Number(process.env.BCRYPT_COST || 12));
-		await db.run('INSERT INTO users (id,full_name,email,password_hash,role,identity_number,detail,status) VALUES (?,?,?,?,?,?,?,?)', id, 'Admin Sekolah', adminEmail, hash, 'ADMIN', `ADMIN-${id.slice(0, 8)}`, 'Administrasi sekolah', 'AKTIF');
+		await db.run('INSERT INTO pengguna (id,full_name,email,password_hash,role,identity_number,detail,status) VALUES (?,?,?,?,?,?,?,?)', id, 'Admin Sekolah', adminEmail, hash, 'ADMIN', `ADMIN-${id.slice(0, 8)}`, 'Administrasi sekolah', 'AKTIF');
 		if (process.env.SEED_ADMIN_PASSWORD) console.log(`Admin awal dibuat: ${adminEmail}`);
 		else console.log(`Admin lokal pertama kali: ${adminEmail} | kata sandi sementara: ${adminPassword}`);
 	}

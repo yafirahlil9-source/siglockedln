@@ -63,12 +63,12 @@ async function api(baseUrl, endpoint, { method = 'GET', body, cookie } = {}) {
   return { response, data: await response.json() };
 }
 
-async function postAttendance(baseUrl, cookie, faceDescriptor) {
+async function postAttendance(baseUrl, cookie, faceDescriptor, coordinates = {}, accuracy = 15) {
   const form = new FormData();
   form.append('photo', new Blob([TINY_JPEG], { type: 'image/jpeg' }), 'attendance.jpg');
-  form.append('latitude', '-6.2');
-  form.append('longitude', '106.816666');
-  form.append('accuracy', '15');
+  form.append('latitude', String(coordinates.latitude ?? -7.164041847763249));
+  form.append('longitude', String(coordinates.longitude ?? 112.64734569558635));
+  form.append('accuracy', String(accuracy));
   if (faceDescriptor !== undefined) {
     form.append('faceDescriptor', JSON.stringify(faceDescriptor));
   }
@@ -168,13 +168,24 @@ test('face biometric registration, server-side attendance enforcement, and delet
     const mismatchAtt = await postAttendance(baseUrl, cookie, intruderDescriptor);
     assert.equal(mismatchAtt.response.status, 403);
 
-    // 6. Accept attendance when descriptor matches owner (with slight realistic noise)
+    // 6. Reject attendance outside the school radius and with inaccurate GPS
     const liveOwnerDescriptor = ownerDescriptor.map(v => Number((v + 0.01).toFixed(4)));
+    const outsideAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor, {
+      latitude: -7.164041847763249,
+      longitude: 112.65734569558635
+    });
+    assert.equal(outsideAtt.response.status, 403);
+    assert.match(outsideAtt.data.error, /Di luar radius sekolah/);
+
+    const inaccurateAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor, {}, 101);
+    assert.equal(inaccurateAtt.response.status, 422);
+
+    // 7. Accept attendance inside the school radius when descriptor matches owner
     const matchAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor);
     assert.equal(matchAtt.response.status, 201);
     assert.equal(matchAtt.data.verification, 'DISETUJUI');
 
-    // 7. Delete face descriptor and verify
+    // 8. Delete face descriptor and verify
     const deleteRes = await api(baseUrl, '/api/profile/face', {
       method: 'DELETE',
       cookie

@@ -27,7 +27,7 @@ const seedTasks = [
 let currentUser = null, currentPage = 'beranda', taskFilter = 'Semua', taskCategory = 'Semua', searchRole = 'Semua', searchQuery = '', tasks = [], topics = [], attendance = [];
 let bioText = '', showAverage = true, showRank = true, cameraStream = null, currentPosition = null;
 let notifications = [], adminAccounts = [];
-let schoolSettings = { latitude: '-6.200000', longitude: '106.816666', radius: 100, open: '06:30', late: '07:15', cutoff: '23:59', alpha: 3 };
+let schoolSettings = { latitude: '-7.164041847763249', longitude: '112.64734569558635', radius: 100, open: '06:30', late: '07:15', cutoff: '23:59', alpha: 3 };
 let identityRequests = [];
 function svgIcon(name, size = 18) {
     const paths = {
@@ -293,6 +293,7 @@ async function setupApp() {
             radius: settingsData.settings.radiusMeters,
             open: settingsData.settings.openTime,
             late: settingsData.settings.lateAfter,
+            cutoff: settingsData.settings.closeTime,
             close: settingsData.settings.closeTime
         };
         if (currentPage === 'beranda') renderHome();
@@ -565,7 +566,7 @@ function mapAssignment(task) {
         submissionCount: Number(task.submissionCount) || 0
     };
 }
-setupApp = async function () { let role = currentUser.role; $('#topUser').textContent = currentUser.name; $('#topRole').textContent = role === 'siswa' ? 'Siswa' : role === 'guru' ? 'Guru' : role === 'staf' ? 'Staf' : 'Admin sekolah'; $('#today').textContent = new Date().toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' }); renderNav(); goPage('beranda'); fetchNotifications(); if (!window._notifPollTimer) { window._notifPollTimer = setInterval(() => { if (currentUser) fetchNotifications(); }, 15000); } try { let [postData, taskData, settingsData] = await Promise.all([api('/api/posts'), api('/api/assignments'), api('/api/attendance/settings')]); topics = postData.posts.map(post => ({ ...post, time: post.createdAt ? new Date(post.createdAt).getTime() : Date.now(), owner: (post.isOwner || (currentUser && currentUser.role === 'admin')) ? 'demo' : 'other', canDelete: Boolean(post.canDelete || post.isOwner || (currentUser && currentUser.role === 'admin')) })); if (taskData.availableClasses) window.availableClasses = taskData.availableClasses; tasks = (taskData.assignments || []).map(mapAssignment); schoolSettings = { ...schoolSettings, latitude: String(settingsData.settings.latitude), longitude: String(settingsData.settings.longitude), radius: settingsData.settings.radiusMeters, open: settingsData.settings.openTime, late: settingsData.settings.lateAfter, close: settingsData.settings.closeTime }; renderNav(); if (currentPage === 'beranda') renderHome() } catch (error) { toast('Sebagian data belum dapat dimuat: ' + error.message) } };
+setupApp = async function () { let role = currentUser.role; $('#topUser').textContent = currentUser.name; $('#topRole').textContent = role === 'siswa' ? 'Siswa' : role === 'guru' ? 'Guru' : role === 'staf' ? 'Staf' : 'Admin sekolah'; $('#today').textContent = new Date().toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' }); renderNav(); goPage('beranda'); fetchNotifications(); if (!window._notifPollTimer) { window._notifPollTimer = setInterval(() => { if (currentUser) fetchNotifications(); }, 15000); } try { let [postData, taskData, settingsData] = await Promise.all([api('/api/posts'), api('/api/assignments'), api('/api/attendance/settings')]); topics = postData.posts.map(post => ({ ...post, time: post.createdAt ? new Date(post.createdAt).getTime() : Date.now(), owner: (post.isOwner || (currentUser && currentUser.role === 'admin')) ? 'demo' : 'other', canDelete: Boolean(post.canDelete || post.isOwner || (currentUser && currentUser.role === 'admin')) })); if (taskData.availableClasses) window.availableClasses = taskData.availableClasses; tasks = (taskData.assignments || []).map(mapAssignment); schoolSettings = { ...schoolSettings, latitude: String(settingsData.settings.latitude), longitude: String(settingsData.settings.longitude), radius: settingsData.settings.radiusMeters, open: settingsData.settings.openTime, late: settingsData.settings.lateAfter, cutoff: settingsData.settings.closeTime, close: settingsData.settings.closeTime }; renderNav(); if (currentPage === 'beranda') renderHome() } catch (error) { toast('Sebagian data belum dapat dimuat: ' + error.message) } };
 addTaskForm = function () {
     const existingPanel = $('.task-create-panel');
     if (existingPanel) {
@@ -1506,7 +1507,68 @@ function renderCalendar() {
     let events = JSON.parse(localStorage.getItem('sh_calendar') || 'null') || [{ title: 'Ujian Tengah Semester', start: '2026-11-02', end: '2026-11-07', type: 'Ujian' }, { title: 'Hari Guru Nasional', start: '2026-11-25', end: '2026-11-25', type: 'Efektif' }]; $('#pageContent').innerHTML = heading('AGENDA SEKOLAH', 'Kalender sekolah', 'Hari efektif, libur, dan agenda akademik.') + `<section class="card"><div class="card-title"><h3>Tambah agenda</h3><small>TERLIHAT OLEH WARGA SEKOLAH</small></div><form id="calendarForm" class="calendar-form"><input id="eventTitle" class="field" required maxlength="120" placeholder="Nama agenda"><select id="eventType" class="field"><option>Libur</option><option>Efektif</option><option>Ujian</option></select><input id="eventStart" class="field" type="date" required><input id="eventEnd" class="field" type="date" required><button class="btn btn-primary">Simpan agenda</button></form></section><section class="card" style="margin-top:18px"><div class="card-title"><h3>Agenda mendatang</h3><small>${events.length} AGENDA</small></div><div class="table-wrap"><table><thead><tr><th>Agenda</th><th>Jenis</th><th>Mulai</th><th>Selesai</th><th></th></tr></thead><tbody>${events.sort((a, b) => a.start.localeCompare(b.start)).map((event, index) => `<tr><td><b>${esc(event.title)}</b></td><td>${esc(event.type)}</td><td>${prettyDate(event.start)}</td><td>${prettyDate(event.end)}</td><td><button class="text-action" data-event-delete="${index}">Hapus</button></td></tr>`).join('')}</tbody></table></div></section>`;
     $('#calendarForm').onsubmit = e => { e.preventDefault(); if ($('#eventEnd').value < $('#eventStart').value) return toast('Tanggal selesai harus setelah tanggal mulai.'); events.push({ title: $('#eventTitle').value.trim(), type: $('#eventType').value, start: $('#eventStart').value, end: $('#eventEnd').value }); localStorage.setItem('sh_calendar', JSON.stringify(events)); renderCalendar(); toast('Agenda sekolah ditambahkan.') }; $$('[data-event-delete]').forEach(btn => btn.onclick = () => { events.splice(Number(btn.dataset.eventDelete), 1); localStorage.setItem('sh_calendar', JSON.stringify(events)); renderCalendar() })
 }
-function renderAttendanceSettings() { $('#pageContent').innerHTML = heading('PENGATURAN SEKOLAH', 'Aturan kehadiran', 'Tetapkan jam absen dan titik acuan sekolah.') + `<form id="attendanceSettingsForm" class="card settings-form"><div class="settings-grid"><label>Koordinat lintang<input class="field" id="settingLatitude" type="number" step="0.000001" value="${esc(schoolSettings.latitude)}" required></label><label>Koordinat bujur<input class="field" id="settingLongitude" type="number" step="0.000001" value="${esc(schoolSettings.longitude)}" required></label><label>Radius absen (meter)<input class="field" id="settingRadius" type="number" min="30" max="500" value="${schoolSettings.radius}" required></label><label>Jam mulai<input class="field" id="settingOpen" type="time" value="${schoolSettings.open}" required></label><label>Batas terlambat<input class="field" id="settingLate" type="time" value="${schoolSettings.late}" required></label><label>Batas koreksi<input class="field" id="settingCutoff" type="time" value="${schoolSettings.cutoff}" required></label><label>Batas alpha per bulan<input class="field" id="settingAlpha" type="number" min="1" max="31" value="${schoolSettings.alpha}" required></label></div><div class="side-note"><h4>Lokasi demo</h4><p>Koordinat sekolah hanya digunakan untuk menghitung jarak di halaman demo. Nilai ini belum tersimpan di server.</p></div><button class="btn btn-primary" type="submit">Simpan pengaturan</button></form>`; $('#attendanceSettingsForm').onsubmit = e => { e.preventDefault(); schoolSettings = { latitude: $('#settingLatitude').value, longitude: $('#settingLongitude').value, radius: Number($('#settingRadius').value), open: $('#settingOpen').value, late: $('#settingLate').value, cutoff: $('#settingCutoff').value, alpha: Number($('#settingAlpha').value) }; persistAdminData(); toast('Aturan kehadiran tersimpan di browser.') } }
+function renderAttendanceSettings() {
+    $('#pageContent').innerHTML = heading('PENGATURAN SEKOLAH', 'Aturan kehadiran', 'Tetapkan jam absen dan titik acuan sekolah.') + `
+        <form id="attendanceSettingsForm" class="card settings-form">
+            <div class="settings-grid">
+                <label>Koordinat lintang<input class="field" id="settingLatitude" type="number" min="-90" max="90" step="any" value="${esc(schoolSettings.latitude)}" required></label>
+                <label>Koordinat bujur<input class="field" id="settingLongitude" type="number" min="-180" max="180" step="any" value="${esc(schoolSettings.longitude)}" required></label>
+                <label>Radius absen (meter)<input class="field" id="settingRadius" type="number" min="30" max="500" value="${schoolSettings.radius}" required></label>
+                <label>Jam mulai<input class="field" id="settingOpen" type="time" value="${schoolSettings.open}" required></label>
+                <label>Batas terlambat<input class="field" id="settingLate" type="time" value="${schoolSettings.late}" required></label>
+                <label>Batas koreksi<input class="field" id="settingCutoff" type="time" value="${schoolSettings.cutoff}" required></label>
+                <label>Batas alpha per bulan<input class="field" id="settingAlpha" type="number" min="1" max="31" value="${schoolSettings.alpha}" required></label>
+            </div>
+            <div class="side-note">
+                <h4>Lokasi sekolah</h4>
+                <p>Koordinat, radius, dan jam absen disimpan di database server. Batas alpha tetap tersimpan di browser admin.</p>
+            </div>
+            <p id="attendanceSettingsMessage" class="hint" role="status"></p>
+            <button class="btn btn-primary" type="submit">Simpan pengaturan</button>
+        </form>`;
+
+    const form = $('#attendanceSettingsForm');
+    const submitButton = form.querySelector('button[type="submit"]');
+    const message = $('#attendanceSettingsMessage');
+    form.onsubmit = async event => {
+        event.preventDefault();
+        const payload = {
+            latitude: Number($('#settingLatitude').value),
+            longitude: Number($('#settingLongitude').value),
+            radiusMeters: Number($('#settingRadius').value),
+            openTime: $('#settingOpen').value,
+            closeTime: $('#settingCutoff').value,
+            lateAfter: $('#settingLate').value
+        };
+        submitButton.disabled = true;
+        submitButton.textContent = 'Menyimpan...';
+        message.textContent = '';
+        message.classList.remove('error');
+        try {
+            await api('/api/admin/attendance/settings', { method: 'PUT', body: JSON.stringify(payload) });
+            schoolSettings = {
+                ...schoolSettings,
+                latitude: String(payload.latitude),
+                longitude: String(payload.longitude),
+                radius: payload.radiusMeters,
+                open: payload.openTime,
+                late: payload.lateAfter,
+                cutoff: payload.closeTime,
+                close: payload.closeTime,
+                alpha: Number($('#settingAlpha').value)
+            };
+            persistAdminData();
+            message.textContent = 'Pengaturan lokasi dan jam absen tersimpan di server.';
+            toast('Aturan kehadiran tersimpan di database.');
+        } catch (error) {
+            message.textContent = error.message;
+            message.classList.add('error');
+        } finally {
+            submitButton.disabled = false;
+            submitButton.textContent = 'Simpan pengaturan';
+        }
+    };
+}
 function renderReminders() { let missing = attendance.filter(item => !['Hadir', 'Terlambat', 'Izin', 'Sakit'].includes(item.status)); $('#pageContent').innerHTML = heading('TINDAK LANJUT', 'Pengingat kehadiran', 'Kirim pengingat aplikasi kepada warga yang belum mengisi kehadiran.') + `<section class="card"><div class="card-title"><h3>Belum mengisi kehadiran</h3><span class="status status-belum">${missing.length} warga</span></div><div class="table-wrap"><table><thead><tr><th>Nama</th><th>Kelas</th><th>Status</th></tr></thead><tbody>${missing.map(item => `<tr><td><b>${esc(item.name)}</b></td><td>${esc(item.kelas)}</td><td>Belum absen</td></tr>`).join('') || '<tr><td colspan="3">Semua warga sudah mengisi kehadiran.</td></tr>'}</tbody></table></div><button class="btn btn-primary" id="sendReminders" style="margin-top:18px" ${missing.length ? '' : 'disabled'}>Kirim pengingat aplikasi</button><p class="hint">Pengiriman demo hanya membuat notifikasi lokal, tidak mengirim email atau WhatsApp.</p></section>`; $('#sendReminders').onclick = () => { missing.forEach(item => notifications.unshift({ id: Date.now() + Math.random(), title: 'Pengingat kehadiran', message: `Silakan isi kehadiran hari ini, ${item.name}.`, time: Date.now(), read: false })); localStorage.setItem('sh_notifications', JSON.stringify(notifications)); updateNotificationBadge(); toast(`Pengingat demo dibuat untuk ${missing.length} warga.`) } }
 function renderIdentityRequests() {
     let waiting = identityRequests.filter(item => item.status === 'Menunggu'), history = identityRequests.filter(item => item.status !== 'Menunggu'); $('#pageContent').innerHTML = heading('PRIVASI & KEAMANAN', 'Permintaan buka identitas', 'Setiap persetujuan pada versi produksi harus dilakukan admin lain dan tercatat dalam audit log.') + `<section class="card"><div class="card-title"><h3>Ajukan permintaan</h3><small>ALASAN MIN. 20 KARAKTER</small></div><form id="unlockRequestForm" class="unlock-form"><select id="unlockPost" class="field">${topics.map(topic => `<option value="${topic.id}">${esc(topic.title)}</option>`).join('')}</select><textarea id="unlockReason" class="field" required minlength="20" maxlength="500" rows="3" placeholder="Jelaskan alasan kebutuhan peninjauan..."></textarea><button class="btn btn-primary">Ajukan untuk ditinjau</button></form></section><section class="card" style="margin-top:18px"><div class="card-title"><h3>Menunggu keputusan</h3><small>${waiting.length} PERMINTAAN</small></div>${waiting.map(request => `<article class="unlock-item"><div><b>${esc(request.post)}</b><p>${esc(request.reason)}</p><small>Diajukan ${ago(request.date)}</small></div><div><button class="btn btn-outline" data-unlock-decision="${request.id}" data-decision="Ditolak">Tolak</button><button class="btn btn-primary" data-unlock-decision="${request.id}" data-decision="Disetujui">Setujui</button></div></article>`).join('') || '<div class="empty-state">Tidak ada permintaan yang menunggu.</div>'}</section><section class="card" style="margin-top:18px"><div class="card-title"><h3>Riwayat keputusan</h3><small>${history.length} KEPUTUSAN</small></div>${history.map(request => `<div class="history-row"><span class="history-check">${request.status === 'Disetujui' ? '✓' : '×'}</span><span><b>${esc(request.post)}</b><small>${esc(request.status)} · ${ago(request.date)}</small></span></div>`).join('') || '<div class="empty-state">Riwayat masih kosong.</div>'}</section>`;
