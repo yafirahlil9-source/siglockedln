@@ -12,6 +12,7 @@ renderProfile = async function () {
   const detailLabels = { siswa: 'Kelas', guru: 'Mata pelajaran', staf: 'Bidang tugas', admin: 'Bagian' };
   const detailLabel = detailLabels[profile.role] || 'Detail';
   const isGuru = profile.role === 'guru';
+  const isAdmin = profile.role === 'admin' || (currentUser && currentUser.role === 'admin');
   const hasFace = Boolean(profile.hasFaceRegistered);
 
   function syncTopAvatar(avatarUrl) {
@@ -71,6 +72,7 @@ renderProfile = async function () {
           </form>
         </section>
 
+        ${!isAdmin ? `
         <section class="card">
           <div class="card-title">
             <h3>Verifikasi Biometrik Wajah</h3>
@@ -97,6 +99,7 @@ renderProfile = async function () {
             <p>Data biometrik disimpan sebagai 128-vektor matematis yang dienkripsi di server sekolah. Foto kehadiran disimpan terpisah dan hanya dapat diakses oleh pemilik akun atau admin.</p>
           </div>
         </section>
+        ` : ''}
 
         <div class="side-note" style="margin-top:18px">
           <h4>Privasi akun</h4>
