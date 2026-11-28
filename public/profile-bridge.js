@@ -80,11 +80,7 @@ renderProfile = async function () {
             ${hasFace ? `
               <div class="face-recognition-banner" style="margin-top:0">
                 <span class="face-status-dot good"></span>
-                <span><strong>Wajah Terdaftar:</strong> Data ini digunakan untuk pemeriksaan awal di server saat absensi. Foto kehadiran tetap diperiksa admin sebelum disetujui.</span>
-              </div>
-              <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
-                <button class="btn btn-primary" id="reEnrollFaceBtn" type="button">Pindai / Perbarui Wajah</button>
-                <button class="btn btn-outline" id="deleteFaceBtn" type="button" style="color:#f43f5e">Hapus Data Wajah</button>
+                <span><strong>Wajah Terdaftar:</strong> Data biometrik wajah Anda telah aktif dan terkunci untuk absensi akun ini. Foto kehadiran tetap diperiksa admin sebelum disetujui.</span>
               </div>
             ` : `
               <div class="face-recognition-banner" style="margin-top:0;background:rgba(244,63,94,0.12);border-color:rgba(244,63,94,0.35);color:#fda4af">
@@ -191,35 +187,6 @@ renderProfile = async function () {
         });
       } else {
         toast('Modul pengenalan wajah belum siap.');
-      }
-    };
-  }
-
-  const reEnrollBtn = $('#reEnrollFaceBtn');
-  if (reEnrollBtn) {
-    reEnrollBtn.onclick = () => {
-      if (window.SigFace) {
-        window.SigFace.openEnrollmentModal({
-          onSuccess: () => renderProfile()
-        });
-      } else {
-        toast('Modul pengenalan wajah belum siap.');
-      }
-    };
-  }
-
-  const deleteBtn = $('#deleteFaceBtn');
-  if (deleteBtn) {
-    deleteBtn.onclick = async () => {
-      if (!confirm('Apakah Anda yakin ingin menghapus data biometrik wajah akun ini? Anda harus mendaftar ulang sebelum dapat melakukan absensi.')) {
-        return;
-      }
-      try {
-        const res = await api('/api/profile/face', { method: 'DELETE' });
-        toast(res.message || 'Data wajah berhasil dihapus.');
-        renderProfile();
-      } catch (err) {
-        toast(err.message || 'Gagal menghapus data wajah.');
       }
     };
   }

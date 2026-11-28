@@ -325,13 +325,22 @@ const databasePromise = (async () => {
 	const [legacyTeacherDetails] = await pool.execute("SELECT DISTINCT detail FROM pengguna WHERE role='GURU' AND detail != ''");
 	for (const row of legacyTeacherDetails) {
 		for (const name of String(row.detail || '').split(/\s*,\s*/).map(value => value.trim()).filter(Boolean)) {
+			if (/^(X|XI|XII)\s+RPL\s+[12]$/i.test(name)) continue;
 			await pool.execute('INSERT IGNORE INTO mata_pelajaran (name) VALUES (?)', [name.slice(0, 80)]);
 		}
 	}
 	const [legacyAssignmentSubjects] = await pool.execute("SELECT DISTINCT subject FROM tugas WHERE subject != ''");
 	for (const row of legacyAssignmentSubjects) {
-		await pool.execute('INSERT IGNORE INTO mata_pelajaran (name) VALUES (?)', [String(row.subject).trim().slice(0, 80)]);
+		const sName = String(row.subject).trim();
+		if (/^(X|XI|XII)\s+RPL\s+[12]$/i.test(sName)) continue;
+		await pool.execute('INSERT IGNORE INTO mata_pelajaran (name) VALUES (?)', [sName.slice(0, 80)]);
 	}
+
+	// Hapus mata pelajaran yang tidak valid seperti nama kelas (misal 'XII RPL 2')
+	await pool.execute("DELETE FROM guru_mata_pelajaran WHERE subject_id IN (SELECT id FROM mata_pelajaran WHERE LOWER(TRIM(name)) = 'xii rpl 2')").catch(() => {});
+	await pool.execute("UPDATE tugas SET subject_id = NULL WHERE subject_id IN (SELECT id FROM mata_pelajaran WHERE LOWER(TRIM(name)) = 'xii rpl 2')").catch(() => {});
+	await pool.execute("DELETE FROM materi WHERE subject_id IN (SELECT id FROM mata_pelajaran WHERE LOWER(TRIM(name)) = 'xii rpl 2')").catch(() => {});
+	await pool.execute("DELETE FROM mata_pelajaran WHERE LOWER(TRIM(name)) = 'xii rpl 2'").catch(() => {});
 
 	await pool.execute(`CREATE TABLE IF NOT EXISTS materi (
 		id VARCHAR(36) PRIMARY KEY,
