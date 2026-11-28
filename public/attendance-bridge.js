@@ -8,11 +8,10 @@ renderUserAttendance = async function () {
     let location = null;
     let faceDetectorTimer = null;
     let isFaceInGuide = false;
-    let isFaceMatched = false;
-    let latestMatchedDescriptor = null;
+    let latestFaceDescriptor = null;
     let currentGuideReason = 'Posisikan wajah Anda di dalam lingkaran panduan.';
     let isScannerRunning = false;
-    let userFaceData = { hasFace: false, descriptor: null, name: currentUser ? currentUser.name : '' };
+    let userFaceData = { hasFace: false, name: currentUser ? currentUser.name : '' };
 
     // Ambil data biometrik wajah terdaftar dari server
     if (window.SigFace) {
@@ -20,18 +19,18 @@ renderUserAttendance = async function () {
             userFaceData = await window.SigFace.getRegisteredFace();
         } catch (_) {}
     }
-    const hasRegisteredFace = Boolean(userFaceData.hasFace && userFaceData.descriptor);
+    const hasRegisteredFace = Boolean(userFaceData.hasFace);
     const accountOwnerName = userFaceData.name || (currentUser ? currentUser.name : 'Pengguna');
 
     $('#pageContent').innerHTML = heading(
         'KEHADIRAN HARI INI',
-        'Absensi Wajah Otomatis & Terverifikasi',
-        'Foto dan biometrik wajah diverifikasi secara otomatis oleh sistem AI untuk memastikan hanya pemilik akun yang dapat absen.'
+        'Absensi wajah',
+        'Lakukan pemeriksaan awal wajah dan lokasi di perangkat. Foto kehadiran tetap diperiksa admin sebelum disetujui.'
     ) + `<div class="attendance-layout">
         <section class="card attendance-camera-card">
             <div class="card-title">
                 <h3>Ambil foto kehadiran</h3>
-                <span class="demo-chip" style="background:var(--green2);color:var(--emerald)">${hasRegisteredFace ? 'VERIFIKASI BIOMETRIK AKTIF' : 'WAJAH BELUM TERDAFTAR'}</span>
+                <span class="demo-chip" style="background:var(--green2);color:var(--emerald)">${hasRegisteredFace ? 'PEMERIKSAAN AWAL AKTIF' : 'WAJAH BELUM TERDAFTAR'}</span>
             </div>
 
             ${!hasRegisteredFace ? `
@@ -61,7 +60,7 @@ renderUserAttendance = async function () {
             <div class="camera-actions">
                 <button class="btn btn-outline" id="startCamera">Aktifkan kamera</button>
                 <button class="btn btn-outline" id="checkLocation">Periksa lokasi</button>
-                <button class="btn btn-primary locked" id="captureAttendance" title="${hasRegisteredFace ? 'Wajah harus cocok dengan akun pemilik agar tombol absen aktif' : 'Daftarkan wajah Anda terlebih dahulu'}">
+                <button class="btn btn-primary locked" id="captureAttendance" title="${hasRegisteredFace ? 'Pemeriksaan awal wajah dan persetujuan data diperlukan sebelum mengirim foto' : 'Daftarkan wajah Anda terlebih dahulu'}">
                     ${hasRegisteredFace ? 'Posisikan wajah di lingkaran...' : 'Daftarkan wajah terlebih dahulu...'}
                 </button>
             </div>
@@ -70,15 +69,15 @@ renderUserAttendance = async function () {
                 <span class="face-status-dot ${hasRegisteredFace ? 'good' : 'warning'}"></span>
                 <span id="faceRecognitionText">
                     ${hasRegisteredFace
-                        ? `<strong>Pengenalan biometrik aktif:</strong> Sistem akan memverifikasi bahwa wajah Anda cocok dengan akun <strong>${esc(accountOwnerName)}</strong> sebelum absensi diizinkan.`
-                        : `<strong>Wajah belum terdaftar:</strong> Silakan klik "Daftarkan Wajah Sekarang" di atas agar Anda dapat melakukan absensi.`
+                        ? `<strong>Pemeriksaan awal biometrik aktif:</strong> Sistem akan membandingkan wajah di kamera dengan data akun <strong>${esc(accountOwnerName)}</strong>. Admin tetap memeriksa foto sebelum kehadiran disetujui.`
+                        : `<strong>Wajah belum terdaftar:</strong> Silakan klik "Daftarkan Wajah Sekarang" di atas agar pemeriksaan awal dapat dilakukan.`
                     }
                 </span>
             </div>
 
             <label class="photo-consent">
-                <input id="photoConsent" type="checkbox" checked>
-                <span>Saya setuju foto, biometrik wajah, dan koordinat lokasi ini diverifikasi otomatis oleh sistem untuk pencatatan kehadiran resmi sekolah.</span>
+                <input id="photoConsent" type="checkbox">
+                <span>Saya setuju foto kehadiran, hasil pemeriksaan awal wajah, dan koordinat lokasi disimpan untuk pencatatan serta verifikasi admin sekolah.</span>
             </label>
 
             <div class="location-status" id="locationStatus">
@@ -86,12 +85,13 @@ renderUserAttendance = async function () {
                 <span>Lokasi GPS akan diverifikasi ulang saat foto absen dikirim.</span>
             </div>
 
-            <p class="hint">✓ Proteksi Anti Titip Absen: Sistem AI biometrik mengenali 128 fitur wajah secara real-time. Jika wajah bukan milik akun <strong>${esc(accountOwnerName)}</strong>, absensi otomatis ditolak.</p>
+            <p class="hint">Pemeriksaan wajah berjalan di perangkat sebagai pemeriksaan awal, bukan jaminan anti-titip absen. Foto akan berstatus menunggu sampai diperiksa admin.</p>
         </section>
 
         <aside class="grid attendance-aside">
+            ${geofenceCardHtml(true)}
             <section class="card">
-                <div class="card-title"><h3>Riwayat foto</h3><small>TERVERIFIKASI SISTEM</small></div>
+                <div class="card-title"><h3>Riwayat foto</h3><small>MENUNGGU / DIPERIKSA ADMIN</small></div>
                 <div id="myAttendanceRows">Memuat riwayat...</div>
             </section>
         </aside>
@@ -108,6 +108,19 @@ renderUserAttendance = async function () {
     const faceHudBadge = $('#faceHudBadge');
     const faceBannerText = $('#faceRecognitionText');
     const video = $('#attendanceVideo');
+
+    function updateCaptureState() {
+        if (!capture?.isConnected) return;
+        if (consent.checked && isFaceInGuide && latestFaceDescriptor && hasRegisteredFace) {
+            capture.className = 'btn btn-primary';
+            capture.textContent = '✓ Kirim foto untuk diperiksa admin';
+        } else {
+            capture.className = 'btn btn-primary locked';
+            capture.textContent = consent.checked ? 'Posisikan wajah di lingkaran...' : 'Setujui penyimpanan data terlebih dahulu...';
+        }
+    }
+    consent.onchange = updateCaptureState;
+    updateCaptureState();
 
     $('#closePhotoDialog').onclick = () => $('#photoDialog').close();
 
@@ -148,9 +161,8 @@ renderUserAttendance = async function () {
                     if (evalRes.inCircle) {
                         isFaceInGuide = true;
 
-                        if (!hasRegisteredFace || !userFaceData.descriptor) {
-                            isFaceMatched = false;
-                            latestMatchedDescriptor = null;
+                        if (!hasRegisteredFace) {
+                            latestFaceDescriptor = null;
                             faceGuide.className = 'face-guide face-warning';
                             if (faceHudBadge) {
                                 faceHudBadge.className = 'face-hud-badge warning';
@@ -164,44 +176,20 @@ renderUserAttendance = async function () {
                                 capture.textContent = 'Daftarkan wajah terlebih dahulu...';
                             }
                         } else {
-                            const match = window.SigFace.compareDescriptors(detection.descriptor, userFaceData.descriptor);
-
-                            if (match.isMatched) {
-                                isFaceMatched = true;
-                                latestMatchedDescriptor = Array.from(detection.descriptor);
-                                faceGuide.className = 'face-guide face-detected';
-                                if (faceHudBadge) {
-                                    faceHudBadge.className = 'face-hud-badge detected';
-                                    faceHudBadge.innerHTML = `<span class="hud-icon">✓</span> Wajah Terverifikasi: ${esc(accountOwnerName)} (${match.similarity}%)`;
-                                }
-                                if (faceBannerText) {
-                                    faceBannerText.innerHTML = `<strong>✓ Wajah Terverifikasi:</strong> Cocok dengan akun <strong>${esc(accountOwnerName)}</strong> (${match.similarity}% akurasi biometrik). Silakan ambil foto absen.`;
-                                }
-                                if (capture) {
-                                    capture.className = 'btn btn-primary';
-                                    capture.textContent = '✓ Ambil & verifikasi foto absen';
-                                }
-                            } else {
-                                isFaceMatched = false;
-                                latestMatchedDescriptor = null;
-                                faceGuide.className = 'face-guide face-error';
-                                if (faceHudBadge) {
-                                    faceHudBadge.className = 'face-hud-badge error';
-                                    faceHudBadge.innerHTML = `<span class="hud-icon">⚠</span> Wajah Tidak Cocok dengan Akun!`;
-                                }
-                                if (faceBannerText) {
-                                    faceBannerText.innerHTML = `<strong>⚠ Wajah Ditolak:</strong> Wajah yang berada di depan kamera <strong>bukan milik akun ${esc(accountOwnerName)}</strong> (tingkat kemiripan ${match.similarity}%). Titip absen dilarang!`;
-                                }
-                                if (capture) {
-                                    capture.className = 'btn btn-primary locked';
-                                    capture.textContent = 'Wajah tidak cocok dengan akun...';
-                                }
+                            latestFaceDescriptor = Array.from(detection.descriptor);
+                            faceGuide.className = 'face-guide face-detected';
+                            if (faceHudBadge) {
+                                faceHudBadge.className = 'face-hud-badge detected';
+                                faceHudBadge.innerHTML = '<span class="hud-icon">✓</span> Wajah terdeteksi dalam panduan';
                             }
+                            if (faceBannerText) {
+                                faceBannerText.innerHTML = '<strong>Wajah terdeteksi:</strong> Pemeriksaan awal terhadap data akun dilakukan saat foto dikirim. Admin tetap memeriksa foto kehadiran.';
+                            }
+                            updateCaptureState();
                         }
                     } else {
                         isFaceInGuide = false;
-                        isFaceMatched = false;
-                        latestMatchedDescriptor = null;
+                        latestFaceDescriptor = null;
                         currentGuideReason = evalRes.reason;
                         faceGuide.className = 'face-guide face-warning';
                         if (faceHudBadge) {
@@ -209,7 +197,7 @@ renderUserAttendance = async function () {
                             faceHudBadge.innerHTML = `<span class="hud-icon">⚠</span> ${evalRes.reason}`;
                         }
                         if (faceBannerText) {
-                            faceBannerText.innerHTML = `<strong>Posisikan wajah:</strong> ${evalRes.reason} agar sistem dapat memverifikasi identitas Anda.`;
+                            faceBannerText.innerHTML = `<strong>Posisikan wajah:</strong> ${evalRes.reason} agar pemeriksaan awal dapat dilakukan.`;
                         }
                         if (capture) {
                             capture.className = 'btn btn-primary locked';
@@ -218,8 +206,7 @@ renderUserAttendance = async function () {
                     }
                 } else {
                     isFaceInGuide = false;
-                    isFaceMatched = false;
-                    latestMatchedDescriptor = null;
+                    latestFaceDescriptor = null;
                     currentGuideReason = 'Wajah tidak terdeteksi di dalam lingkaran';
                     faceGuide.className = 'face-guide';
                     if (faceHudBadge) {
@@ -280,7 +267,7 @@ renderUserAttendance = async function () {
         const { settings } = await api('/api/attendance/settings');
         const meters = Math.round(distanceMeters(position.coords.latitude, position.coords.longitude, settings.latitude, settings.longitude));
         if (position.coords.accuracy > 100) throw new Error(`Akurasi GPS terlalu rendah (${Math.round(position.coords.accuracy)} meter).`);
-        if (meters > Number(settings.radiusMeters)) throw new Error(`Di luar radius sekolah (${meters} meter).`);
+        if (meters + position.coords.accuracy > Number(settings.radiusMeters)) throw new Error(`Di luar radius sekolah (${meters} meter + akurasi ${Math.round(position.coords.accuracy)} meter).`);
         location = position.coords;
         return { meters, accuracy: Math.round(position.coords.accuracy) };
     }
@@ -300,7 +287,7 @@ renderUserAttendance = async function () {
 
     capture.onclick = async () => {
         // 1. Cek pendaftaran wajah
-        if (!hasRegisteredFace || !userFaceData.descriptor) {
+        if (!hasRegisteredFace) {
             toast('⚠️ Anda belum mendaftarkan wajah di sistem! Harap daftarkan wajah terlebih dahulu.');
             if (window.SigFace) {
                 window.SigFace.openEnrollmentModal({
@@ -335,14 +322,14 @@ renderUserAttendance = async function () {
         }
 
         // 4. PENGECEKAN KETAT 2: WAJAH HARUS COCOK DENGAN PEMILIK AKUN
-        if (!isFaceMatched || !latestMatchedDescriptor) {
+        if (!latestFaceDescriptor) {
             faceGuide?.classList.remove('face-detected', 'face-warning');
             faceGuide?.classList.add('face-error');
             setTimeout(() => { faceGuide?.classList.remove('face-error'); }, 700);
-            return toast(`⚠️ Absen Ditolak! Wajah yang terdeteksi tidak cocok dengan akun "${accountOwnerName}". Absensi harus dilakukan oleh pemilik akun sendiri.`);
+            return toast('Wajah belum terdeteksi dengan jelas. Posisikan wajah di dalam lingkaran lalu coba lagi.');
         }
 
-        if (!consent.checked) consent.checked = true;
+        if (!consent.checked) return toast('Persetujuan penyimpanan foto dan data kehadiran diperlukan.');
 
         // 5. Lokasi
         $('#locationStatus').innerHTML = '<span class="status-dot pending"></span><span>Memverifikasi lokasi absensi...</span>';
@@ -358,9 +345,15 @@ renderUserAttendance = async function () {
 
         capture.disabled = true;
         const originalText = capture.textContent;
-        capture.textContent = 'Merekam biometrik & mengirim foto...';
+        capture.textContent = 'Mengirim foto untuk diperiksa admin...';
 
         try {
+            const faceResult = await api('/api/profile/face/check', {
+                method: 'POST',
+                body: JSON.stringify({ descriptor: latestFaceDescriptor })
+            });
+            if (!faceResult.matched) throw new Error('Pemeriksaan awal wajah belum cocok dengan data akun.');
+
             let canvas = document.createElement('canvas'), width = Math.min(video.videoWidth, 1280);
             canvas.width = width;
             canvas.height = Math.round(width * video.videoHeight / video.videoWidth);
@@ -372,7 +365,7 @@ renderUserAttendance = async function () {
             ctx.fillRect(16, canvas.height - 48, boxW, 34);
             ctx.fillStyle = '#22c55e';
             ctx.font = 'bold 12.5px sans-serif';
-            ctx.fillText(`✓ BIOMETRIC VERIFIED • ${accountOwnerName.toUpperCase()} • ${new Date().toLocaleTimeString('id-ID')}`, 26, canvas.height - 26);
+            ctx.fillText(`✓ PEMERIKSAAN AWAL • ${accountOwnerName.toUpperCase()} • ${new Date().toLocaleTimeString('id-ID')}`, 26, canvas.height - 26);
 
             let blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.88));
             if (!blob) throw new Error('Foto tidak dapat diambil dari kamera.');
@@ -382,7 +375,7 @@ renderUserAttendance = async function () {
             form.append('latitude', String(location.latitude));
             form.append('longitude', String(location.longitude));
             form.append('accuracy', String(location.accuracy));
-            form.append('faceDescriptor', JSON.stringify(latestMatchedDescriptor));
+            form.append('faceDescriptor', JSON.stringify(latestFaceDescriptor));
 
             let result = await api('/api/attendance/photo', { method: 'POST', body: form });
             toast(result.message || 'Wajah terverifikasi biometrik! Kehadiran berhasil tercatat.');
@@ -400,7 +393,7 @@ renderUserAttendance = async function () {
             let result = await api('/api/attendance/mine');
             $('#myAttendanceRows').innerHTML = (result.attendance || []).map(row => {
                 let isApproved = row.verification === 'DISETUJUI';
-                let label = isApproved ? 'Terverifikasi Biometrik' : esc(row.verification);
+                let label = isApproved ? 'Disetujui Admin' : row.verification === 'MENUNGGU' ? 'Menunggu Admin' : esc(row.verification);
                 let badgeStyle = isApproved ? 'style="background:var(--green2);color:var(--emerald)"' : '';
                 return `<div class="history-row">
                     <span class="history-check" ${badgeStyle}>${isApproved ? '✓' : '◷'}</span>
@@ -409,7 +402,7 @@ renderUserAttendance = async function () {
                         <small>${esc(row.day)} · ${new Date(row.capturedAt).toLocaleTimeString('id-ID')}</small>
                     </span>
                     <img class="attendance-thumb" src="/api/attendance/${encodeURIComponent(row.id)}/photo" alt="Foto absensi" data-attendance-preview>
-                    <button class="photo-delete" data-attendance-delete="${esc(row.id)}" aria-label="Hapus foto">×</button>
+                    ${row.verification === 'MENUNGGU' ? `<button class="photo-delete" data-attendance-delete="${esc(row.id)}" aria-label="Hapus foto">×</button>` : ''}
                 </div>`;
             }).join('') || '<div class="empty-state">Belum ada foto kehadiran.</div>';
 

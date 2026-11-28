@@ -74,13 +74,13 @@ renderProfile = async function () {
         <section class="card">
           <div class="card-title">
             <h3>Verifikasi Biometrik Wajah</h3>
-            <span class="demo-chip" style="background:var(--green2);color:var(--emerald)">ANTI TITIP ABSEN</span>
+            <span class="demo-chip" style="background:var(--green2);color:var(--emerald)">PEMERIKSAAN AWAL</span>
           </div>
           <div id="faceBiometricSection">
             ${hasFace ? `
               <div class="face-recognition-banner" style="margin-top:0">
                 <span class="face-status-dot good"></span>
-                <span><strong>Wajah Terdaftar & Aktif:</strong> Akun ini telah diverifikasi biometrik. Sistem mengenali wajah Anda secara otomatis saat absensi untuk mencegah titip absen.</span>
+                <span><strong>Wajah Terdaftar:</strong> Data ini digunakan untuk pemeriksaan awal di server saat absensi. Foto kehadiran tetap diperiksa admin sebelum disetujui.</span>
               </div>
               <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
                 <button class="btn btn-primary" id="reEnrollFaceBtn" type="button">Pindai / Perbarui Wajah</button>
@@ -89,7 +89,7 @@ renderProfile = async function () {
             ` : `
               <div class="face-recognition-banner" style="margin-top:0;background:rgba(244,63,94,0.12);border-color:rgba(244,63,94,0.35);color:#fda4af">
                 <span class="face-status-dot" style="background:#f43f5e"></span>
-                <span><strong>Wajah Belum Terdaftar:</strong> Anda belum mendaftarkan wajah Anda. Absensi otomatis memerlukan verifikasi wajah akun Anda sendiri agar tidak bisa dititipkan ke orang lain.</span>
+                <span><strong>Wajah Belum Terdaftar:</strong> Daftarkan wajah untuk mengaktifkan pemeriksaan awal saat absensi. Pemeriksaan ini bukan jaminan anti-titip absen.</span>
               </div>
               <div style="margin-top:14px">
                 <button class="btn btn-primary" id="enrollFaceBtn" type="button">✦ Daftarkan Wajah Saya Sekarang</button>
@@ -98,13 +98,13 @@ renderProfile = async function () {
           </div>
           <div class="side-note" style="margin-top:14px">
             <h4>Keamanan & Privasi Wajah</h4>
-            <p>Data biometrik disimpan dalam bentuk 128-vektor matematis terenkripsi di server sekolah. Foto asli tidak dapat direkonstruksi dari vektor ini, menjaga privasi Anda tetap terlindungi.</p>
+            <p>Data biometrik disimpan sebagai 128-vektor matematis yang dienkripsi di server sekolah. Foto kehadiran disimpan terpisah dan hanya dapat diakses oleh pemilik akun atau admin.</p>
           </div>
         </section>
 
         <div class="side-note" style="margin-top:18px">
           <h4>Privasi akun</h4>
-          <p>Data dasar berasal dari akun aktif Anda. Nilai dan peringkat belum tersedia sampai modul penilaian selesai dihubungkan.</p>
+          <p>Data dasar berasal dari akun aktif Anda. Nilai tugas dapat dilihat pada halaman Tugas; ringkasan peringkat belum tersedia.</p>
         </div>
       </div>
     </div>

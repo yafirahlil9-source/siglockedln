@@ -27,6 +27,7 @@ const seedTasks = [
 let currentUser = null, currentPage = 'beranda', taskFilter = 'Semua', taskCategory = 'Semua', searchRole = 'Semua', searchQuery = '', tasks = [], topics = [], attendance = [];
 let bioText = '', showAverage = true, showRank = true, cameraStream = null, currentPosition = null;
 let notifications = [], adminAccounts = [];
+let availableSubjects = [], teacherSubjects = [], teacherClasses = [], teacherMaterials = [], allMaterials = [];
 let schoolSettings = { latitude: '-7.164041847763249', longitude: '112.64734569558635', radius: 100, open: '06:30', late: '07:15', cutoff: '23:59', alpha: 3 };
 let identityRequests = [];
 function svgIcon(name, size = 18) {
@@ -45,8 +46,8 @@ function svgIcon(name, size = 18) {
     return `<svg class="sg-svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths[name] || paths.sparkles}</svg>`;
 }
 window.svgIcon = svgIcon;
-const userNav = [['beranda', svgIcon('home', 18), 'Beranda'], ['cari', svgIcon('search', 18), 'Cari'], ['absen', svgIcon('scanFace', 18), 'Absen'], ['tugas', svgIcon('tasks', 18), 'Tugas'], ['profil', svgIcon('user', 18), 'Profil']];
-const adminNav = [['beranda', svgIcon('home', 18), 'Beranda'], ['cari', svgIcon('search', 18), 'Cari'], ['kehadiran', svgIcon('scanFace', 18), 'Kehadiran'], ['kelas', svgIcon('classes', 18), 'Kelas'], ['laporan', svgIcon('reports', 18), 'Laporan'], ['profil', svgIcon('user', 18), 'Profil']];
+const userNav = [['beranda', svgIcon('home', 18), 'Beranda'], ['cari', svgIcon('search', 18), 'Cari'], ['absen', svgIcon('scanFace', 18), 'Absen'], ['materi', svgIcon('tasks', 18), 'Materi'], ['tugas', svgIcon('tasks', 18), 'Tugas'], ['profil', svgIcon('user', 18), 'Profil']];
+const adminNav = [['beranda', svgIcon('home', 18), 'Beranda'], ['cari', svgIcon('search', 18), 'Cari'], ['kehadiran', svgIcon('scanFace', 18), 'Kehadiran'], ['akademik', svgIcon('classes', 18), 'Mata pelajaran'], ['materi', svgIcon('tasks', 18), 'Materi'], ['kelas', svgIcon('classes', 18), 'Kelas'], ['laporan', svgIcon('reports', 18), 'Laporan'], ['profil', svgIcon('user', 18), 'Profil']];
 function persist() { localStorage.setItem('sh_topics', JSON.stringify(topics)); localStorage.setItem('sh_tasks', JSON.stringify(tasks)); localStorage.setItem('sh_att', JSON.stringify(attendance)) }
 function toast(msg) { let el = $('#toast'); el.textContent = msg; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2500) }
 function esc(s = '') { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) }
@@ -122,20 +123,140 @@ async function populateRegisterClasses() {
 }
 populateRegisterClasses();
 
+function subjectOptions(selected = '') {
+    if (!availableSubjects.length) return '<option value="">Belum ada mata pelajaran</option>';
+    return '<option value="">-- Pilih Mata Pelajaran --</option>' + availableSubjects.map(subject =>
+        `<option value="${subject.id}" ${String(subject.id) === String(selected) ? 'selected' : ''}>${esc(subject.name)}</option>`
+    ).join('');
+}
+
+function closeRegisterSubjectMenus() {
+    $$('.register-subject-picker').forEach(picker => {
+        picker.querySelector('.register-subject-menu')?.classList.add('hidden');
+        picker.querySelector('.register-subject-toggle')?.setAttribute('aria-expanded', 'false');
+    });
+}
+
+function refreshRegisterSubjectSelections() {
+    const selects = $$('.register-subject-select');
+    const selected = selects.map(select => select.value).filter(Boolean);
+    selects.forEach(select => {
+        [...select.options].forEach(option => {
+            option.disabled = Boolean(option.value && selected.includes(option.value) && option.value !== select.value);
+        });
+        const picker = select.closest('.register-subject-picker');
+        if (!picker) return;
+        const current = select.selectedOptions[0];
+        picker.querySelector('.register-subject-current').textContent = select.value ? current.textContent : '-- Pilih Mata Pelajaran --';
+        picker.querySelector('.register-subject-toggle').classList.toggle('has-value', Boolean(select.value));
+        picker.querySelectorAll('.register-subject-option').forEach(option => {
+            const id = option.dataset.subjectId;
+            const isCurrent = id === select.value;
+            const isTaken = selected.includes(id) && !isCurrent;
+            option.disabled = isTaken;
+            option.classList.toggle('is-selected', isCurrent);
+            option.setAttribute('aria-selected', String(isCurrent));
+            option.querySelector('.register-subject-plus').textContent = isCurrent ? '✓' : '+';
+        });
+    });
+}
+
+function addRegisterSubjectRow(selected = '') {
+    const container = $('#registerSubjectRows');
+    if (!container) return;
+    const row = document.createElement('div');
+    row.className = 'register-subject-row';
+    row.innerHTML = `<div class="register-subject-picker">
+        <button type="button" class="field register-subject-toggle" aria-haspopup="listbox" aria-expanded="false">
+            <span class="register-subject-current">-- Pilih Mata Pelajaran --</span><span class="register-subject-chevron">⌄</span>
+        </button>
+        <div class="register-subject-menu hidden" role="listbox" aria-label="Pilih mata pelajaran">
+            ${availableSubjects.map(subject => `<button type="button" class="register-subject-option" data-subject-id="${subject.id}" role="option" aria-selected="false"><span>${esc(subject.name)}</span><span class="register-subject-plus">+</span></button>`).join('') || '<span class="register-subject-empty">Belum ada mata pelajaran</span>'}
+        </div>
+        <select class="register-subject-select" hidden>${subjectOptions(selected)}</select>
+    </div><button type="button" class="icon-btn remove-register-subject" aria-label="Hapus pilihan mata pelajaran">×</button>`;
+    row.querySelector('.remove-register-subject').onclick = event => {
+        event.preventDefault();
+        if (container.querySelectorAll('.register-subject-row').length <= 1) return toast('Minimal satu mata pelajaran harus dipilih.');
+        row.remove();
+        refreshRegisterSubjectSelections();
+    };
+    const select = row.querySelector('select');
+    const toggle = row.querySelector('.register-subject-toggle');
+    const menu = row.querySelector('.register-subject-menu');
+    select.dataset.selectedValue = selected || '';
+    toggle.onclick = event => {
+        event.preventDefault();
+        const opening = menu.classList.contains('hidden');
+        closeRegisterSubjectMenus();
+        menu.classList.toggle('hidden', !opening);
+        toggle.setAttribute('aria-expanded', String(opening));
+    };
+    row.querySelectorAll('.register-subject-option').forEach(option => option.onclick = event => {
+        event.preventDefault();
+        if (option.disabled) return;
+        const wasEmpty = !select.value;
+        select.value = option.dataset.subjectId;
+        select.dataset.selectedValue = select.value;
+        refreshRegisterSubjectSelections();
+        closeRegisterSubjectMenus();
+        if (wasEmpty) {
+            addRegisterSubjectRow();
+            const rows = container.querySelectorAll('.register-subject-row');
+            rows[rows.length - 1].querySelector('.register-subject-toggle').focus();
+        }
+    });
+    container.appendChild(row);
+    refreshRegisterSubjectSelections();
+}
+
+document.addEventListener('click', event => {
+    if (!event.target.closest('.register-subject-picker')) closeRegisterSubjectMenus();
+});
+document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeRegisterSubjectMenus();
+});
+
+async function populateRegisterSubjects() {
+    try {
+        const result = await api('/api/subjects');
+        availableSubjects = result.subjects || [];
+    } catch (_) {
+        availableSubjects = [];
+    }
+    const container = $('#registerSubjectRows');
+    if (!container) return;
+    const selections = [...container.querySelectorAll('.register-subject-select')].map(select => select.value);
+    container.replaceChildren();
+    if (!selections.length) addRegisterSubjectRow();
+    else selections.forEach(value => addRegisterSubjectRow(value));
+}
+
+function selectedRegisterSubjectIds() {
+    return $$('.register-subject-select').map(select => Number(select.value)).filter(id => Number.isInteger(id) && id > 0);
+}
+
+populateRegisterSubjects();
+
 function updateRegisterRoleUI() {
     let role = $('#registerRole') ? $('#registerRole').value : 'SISWA';
     let classGroup = $('#registerClassGroup');
     let classSelect = $('#registerDetail');
+    let subjectsGroup = $('#registerSubjectsGroup');
     if (classGroup && classSelect) {
         if (role === 'SISWA') {
             classGroup.classList.remove('hidden');
             classSelect.required = true;
         } else {
-            // user guru / user admin / staf: kolom kelas dihapus
             classGroup.classList.add('hidden');
             classSelect.required = false;
             classSelect.value = '';
         }
+    }
+    if (subjectsGroup) {
+        const isTeacher = role === 'GURU';
+        subjectsGroup.classList.toggle('hidden', !isTeacher);
+        if (isTeacher && !$('#registerSubjectRows').children.length) addRegisterSubjectRow();
     }
 }
 if ($('#registerRole')) $('#registerRole').onchange = updateRegisterRoleUI;
@@ -150,6 +271,7 @@ function setAuthMode(register) {
     if (register) {
         updateRegisterRoleUI();
         populateRegisterClasses();
+        populateRegisterSubjects();
     }
 }
 if ($('#overlayRegisterBtn')) $('#overlayRegisterBtn').onclick = () => setAuthMode(true);
@@ -177,8 +299,14 @@ $('#registerForm').onsubmit = async e => {
     $('#registerError').classList.add('hidden');
     let role = $('#registerRole').value;
     let detail = role === 'SISWA' ? ($('#registerDetail') ? $('#registerDetail').value.trim() : '') : '';
+    let subjectIds = role === 'GURU' ? selectedRegisterSubjectIds() : [];
     if (role === 'SISWA' && !detail) {
         $('#registerError').textContent = 'Harap pilih kelas Anda terlebih dahulu.';
+        $('#registerError').classList.remove('hidden');
+        return;
+    }
+    if (role === 'GURU' && !subjectIds.length) {
+        $('#registerError').textContent = 'Harap pilih minimal satu mata pelajaran.';
         $('#registerError').classList.remove('hidden');
         return;
     }
@@ -188,7 +316,8 @@ $('#registerForm').onsubmit = async e => {
         password: $('#registerPassword').value,
         role: role,
         identityNumber: $('#registerIdentity').value.trim(),
-        detail: detail
+        detail: detail,
+        subjectIds
     };
     try {
         let result = await api('/api/auth/register', { method: 'POST', body: JSON.stringify(data) });
@@ -212,8 +341,14 @@ $('#googleLogin').onclick = () => { window.location.assign('/auth/google') };
 $('#googleRegister').onclick = async () => {
     let role = $('#registerRole').value;
     let detail = role === 'SISWA' ? ($('#registerDetail') ? $('#registerDetail').value.trim() : '') : '';
+    let subjectIds = role === 'GURU' ? selectedRegisterSubjectIds() : [];
     if (role === 'SISWA' && !detail) {
         $('#registerError').textContent = 'Harap pilih kelas Anda terlebih dahulu.';
+        $('#registerError').classList.remove('hidden');
+        return;
+    }
+    if (role === 'GURU' && !subjectIds.length) {
+        $('#registerError').textContent = 'Harap pilih minimal satu mata pelajaran.';
         $('#registerError').classList.remove('hidden');
         return;
     }
@@ -222,7 +357,8 @@ $('#googleRegister').onclick = async () => {
         email: $('#registerEmail').value.trim(),
         role: role,
         identityNumber: $('#registerIdentity').value.trim(),
-        detail: detail
+        detail: detail,
+        subjectIds
     };
     try {
         let result = await api('/api/auth/google-intent', { method: 'POST', body: JSON.stringify(data) });
@@ -321,12 +457,12 @@ function renderNav() {
     };
 })();
 
-function goPage(page) {
+function goPage(page, options = {}) {
     if (currentPage === 'absen' && page !== 'absen' && cameraStream) {
         cameraStream.getTracks().forEach(track => track.stop());
         cameraStream = null;
     }
-    let adminOnly = ['kehadiran', 'laporan', 'akun', 'kalender', 'aturan', 'pengingat', 'identitas', 'kelas'];
+    let adminOnly = ['kehadiran', 'laporan', 'akun', 'kalender', 'aturan', 'pengingat', 'identitas', 'kelas', 'akademik'];
     if (adminOnly.includes(page) && currentUser.role !== 'admin') {
         page = 'beranda';
         toast('Halaman ini hanya tersedia untuk admin sekolah.');
@@ -339,7 +475,9 @@ function goPage(page) {
         tugas: 'Tugas',
         profil: 'Profil',
         absen: 'Absen wajah',
+        materi: 'Materi pembelajaran',
         kehadiran: 'Kehadiran',
+        akademik: 'Mata pelajaran',
         kelas: 'Pengelolaan data kelas',
         laporan: 'Laporan',
         notifikasi: 'Notifikasi',
@@ -357,7 +495,9 @@ function goPage(page) {
         tugas: renderTasks,
         profil: renderProfile,
         absen: renderAttendance,
+        materi: () => renderMaterials(options.subjectId || ''),
         kehadiran: renderAttendance,
+        akademik: renderAcademicAdmin,
         kelas: renderAdminClasses,
         laporan: renderReports,
         notifikasi: renderNotifications,
@@ -376,7 +516,47 @@ function goPage(page) {
         if (page === 'profil' && currentUser.role === 'admin') addAdminShortcuts();
     }
 }
-$('#logoutBtn').onclick = async () => { if (cameraStream) cameraStream.getTracks().forEach(track => track.stop()); cameraStream = null; await api('/api/auth/logout', { method: 'POST', body: '{}' }).catch(() => { }); currentUser = null; $('#appView').classList.add('hidden'); $('#loginView').classList.remove('hidden'); $('#password').value = ''; $('#username').value = ''; toast('Anda telah keluar dari akun.') }; if ($('#mobileLogoutBtn')) $('#mobileLogoutBtn').onclick = () => $('#logoutBtn').click(); $('#profileShortcut').onclick = () => goPage('profil'); $('#notificationBtn').onclick = () => goPage('notifikasi');
+async function logout() {
+    if (cameraStream) cameraStream.getTracks().forEach(track => track.stop());
+    cameraStream = null;
+    await api('/api/auth/logout', { method: 'POST', body: '{}' }).catch(() => {});
+    currentUser = null;
+    currentPage = 'beranda';
+    tasks = [];
+    topics = [];
+    attendance = [];
+    notifications = [];
+    adminAccounts = [];
+    availableSubjects = [];
+    teacherSubjects = [];
+    teacherClasses = [];
+    teacherMaterials = [];
+    allMaterials = [];
+    identityRequests = [];
+    bioText = '';
+    showAverage = true;
+    showRank = true;
+    if (window._notifPollTimer) clearInterval(window._notifPollTimer);
+    window._notifPollTimer = null;
+    ['sh_topics', 'sh_tasks', 'sh_att', 'sh_notifications', 'sh_accounts', 'sh_settings', 'sh_unlocks', 'sh_bio', 'sh_my_attendance'].forEach(key => localStorage.removeItem(key));
+    $$('dialog[open]').forEach(dialog => dialog.close());
+    $('#pageContent').innerHTML = '';
+    $('#appView').classList.add('hidden');
+    $('#loginView').classList.remove('hidden');
+    $('#password').value = '';
+    $('#username').value = '';
+    $('#registerForm')?.reset();
+    if ($('#registerRole')) $('#registerRole').value = 'SISWA';
+    updateRegisterRoleUI();
+    populateRegisterSubjects();
+    setAuthMode(false);
+    updateNotificationBadge();
+    toast('Anda telah keluar dari akun.');
+}
+$('#logoutBtn').onclick = logout;
+if ($('#mobileLogoutBtn')) $('#mobileLogoutBtn').onclick = () => logout();
+$('#profileShortcut').onclick = () => goPage('profil');
+$('#notificationBtn').onclick = () => goPage('notifikasi');
 function heading(kicker, title, desc, action = '') { return `<div class="page-heading"><div><div class="eyebrow">${kicker}</div><h1>${title}</h1><p>${desc}</p></div>${action ? `<div class="heading-actions">${action}</div>` : ''}</div>` }
 function stat(icon, num, label, change = '') { return `<div class="card stat-card"><div class="stat-top"><span class="stat-icon">${icon}</span>${change ? `<span class="stat-change">${change}</span>` : ''}</div><div class="stat-number">${num}</div><div class="stat-label">${label}</div></div>` }
 function topicHTML(t) {
@@ -566,7 +746,7 @@ function mapAssignment(task) {
         submissionCount: Number(task.submissionCount) || 0
     };
 }
-setupApp = async function () { let role = currentUser.role; $('#topUser').textContent = currentUser.name; $('#topRole').textContent = role === 'siswa' ? 'Siswa' : role === 'guru' ? 'Guru' : role === 'staf' ? 'Staf' : 'Admin sekolah'; $('#today').textContent = new Date().toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' }); renderNav(); goPage('beranda'); fetchNotifications(); if (!window._notifPollTimer) { window._notifPollTimer = setInterval(() => { if (currentUser) fetchNotifications(); }, 15000); } try { let [postData, taskData, settingsData] = await Promise.all([api('/api/posts'), api('/api/assignments'), api('/api/attendance/settings')]); topics = postData.posts.map(post => ({ ...post, time: post.createdAt ? new Date(post.createdAt).getTime() : Date.now(), owner: (post.isOwner || (currentUser && currentUser.role === 'admin')) ? 'demo' : 'other', canDelete: Boolean(post.canDelete || post.isOwner || (currentUser && currentUser.role === 'admin')) })); if (taskData.availableClasses) window.availableClasses = taskData.availableClasses; tasks = (taskData.assignments || []).map(mapAssignment); schoolSettings = { ...schoolSettings, latitude: String(settingsData.settings.latitude), longitude: String(settingsData.settings.longitude), radius: settingsData.settings.radiusMeters, open: settingsData.settings.openTime, late: settingsData.settings.lateAfter, cutoff: settingsData.settings.closeTime, close: settingsData.settings.closeTime }; renderNav(); if (currentPage === 'beranda') renderHome() } catch (error) { toast('Sebagian data belum dapat dimuat: ' + error.message) } };
+setupApp = async function () { let role = currentUser.role; $('#topUser').textContent = currentUser.name; $('#topRole').textContent = role === 'siswa' ? 'Siswa' : role === 'guru' ? 'Guru' : role === 'staf' ? 'Staf' : 'Admin sekolah'; $('#today').textContent = new Date().toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' }); renderNav(); goPage('beranda'); fetchNotifications(); if (!window._notifPollTimer) { window._notifPollTimer = setInterval(() => { if (currentUser) fetchNotifications(); }, 15000); } try { let [postData, taskData, settingsData, teachingData] = await Promise.all([api('/api/posts'), api('/api/assignments'), api('/api/attendance/settings'), api('/api/teaching/me')]); topics = postData.posts.map(post => ({ ...post, time: post.createdAt ? new Date(post.createdAt).getTime() : Date.now(), owner: (post.isOwner || (currentUser && currentUser.role === 'admin')) ? 'demo' : 'other', canDelete: Boolean(post.canDelete || post.isOwner || (currentUser && currentUser.role === 'admin')) })); if (taskData.availableClasses) window.availableClasses = taskData.availableClasses; tasks = (taskData.assignments || []).map(mapAssignment); teacherSubjects = teachingData.subjects || []; teacherClasses = teachingData.classes || []; teacherMaterials = teachingData.materials || []; allMaterials = teachingData.materials || []; if (currentUser.role !== 'guru') availableSubjects = teachingData.subjects || []; schoolSettings = { ...schoolSettings, latitude: String(settingsData.settings.latitude), longitude: String(settingsData.settings.longitude), radius: settingsData.settings.radiusMeters, open: settingsData.settings.openTime, late: settingsData.settings.lateAfter, cutoff: settingsData.settings.closeTime, close: settingsData.settings.closeTime }; renderNav(); if (currentPage === 'beranda') renderHome() } catch (error) { toast('Sebagian data belum dapat dimuat: ' + error.message) } };
 addTaskForm = function () {
     const existingPanel = $('.task-create-panel');
     if (existingPanel) {
@@ -574,7 +754,15 @@ addTaskForm = function () {
         $('#newTitle')?.focus({ preventScroll: true });
         return;
     }
-    let classOptions = (window.availableClasses && window.availableClasses.length ? window.availableClasses : ['Semua Kelas', 'XII RPL 1', 'XII RPL 2', 'XI RPL 1', 'XI RPL 2', 'X RPL 1', 'X RPL 2']);
+    const subjects = teacherSubjects.length ? teacherSubjects : availableSubjects;
+    if (!subjects.length) {
+        toast('Belum ada mata pelajaran yang dipilih.');
+        return;
+    }
+    if (!teacherClasses.length) {
+        toast('Belum ada kelas tersedia. Hubungi admin untuk menambahkan kelas.');
+        return;
+    }
     $('#pageContent').insertAdjacentHTML('beforeend', `
         <section class="card task-create-panel" style="margin-top:20px;scroll-margin-top:20px">
             <div class="card-title">
@@ -583,6 +771,14 @@ addTaskForm = function () {
             </div>
             <form id="taskCreateForm" class="grid two-col">
                 <div>
+                    <label class="field-label" for="newSubject">Mata pelajaran</label>
+                    <select id="newSubject" class="field" required ${subjects.length === 1 ? 'disabled' : ''}>
+                        ${subjects.map(subject => `<option value="${subject.id}">${esc(subject.name)}</option>`).join('')}
+                    </select>
+                    ${subjects.length === 1 ? '<p class="hint">Mata pelajaran terisi otomatis sesuai pilihan saat mendaftar.</p>' : ''}
+                    <label class="field-label" for="newMaterial">Materi dasar tugas</label>
+                    <select id="newMaterial" class="field" required></select>
+                    <div id="taskMaterialHelp" aria-live="polite"></div>
                     <label class="field-label">Kategori tugas</label>
                     <select id="newCategory" class="field" required>
                         <option value="Teori">Teori</option>
@@ -590,10 +786,8 @@ addTaskForm = function () {
                     </select>
                     <label class="field-label">Kelas tujuan</label>
                     <select id="newClass" class="field" required>
-                        ${classOptions.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+                        ${teacherClasses.map(cls => `<option value="${esc(cls.name)}">${esc(cls.name)}</option>`).join('')}
                     </select>
-                    <label class="field-label">Mata pelajaran</label>
-                    <input id="newSubject" class="field" required value="${esc(currentUser.detail && currentUser.role === 'guru' ? currentUser.detail : '')}" placeholder="Contoh: Pemrograman Web" maxlength="80">
                     <label class="field-label">Lampirkan Berkas / Soal (Opsional - PDF, DOCX, ZIP, Gambar maks 25MB)</label>
                     <input id="newAttachment" type="file" class="field" style="padding:8px">
                 </div>
@@ -612,13 +806,42 @@ addTaskForm = function () {
         </section>
     `);
     const panel = $('.task-create-panel');
+    const selectedSubjectId = () => Number($('#newSubject').value);
+    const selectedSubjectName = () => subjects.find(subject => subject.id === selectedSubjectId())?.name || 'mata pelajaran ini';
+    const updateTaskMaterials = () => {
+        const materials = teacherMaterials.filter(material => material.subjectId === selectedSubjectId());
+        const select = $('#newMaterial');
+        const help = $('#taskMaterialHelp');
+        select.innerHTML = materials.length > 1
+            ? '<option value="">Pilih materi...</option>' + materials.map(material => `<option value="${esc(material.id)}">${esc(material.title)}</option>`).join('')
+            : materials.map(material => `<option value="${esc(material.id)}">${esc(material.title)}</option>`).join('');
+        select.disabled = materials.length <= 1;
+        select.required = materials.length > 1;
+        $('#saveTaskBtn').disabled = materials.length === 0;
+        if (!materials.length) {
+            help.innerHTML = `<div class="form-notice">Belum ada materi untuk ${esc(selectedSubjectName())}. Buat materi terlebih dahulu sebelum membuat tugas. <button class="text-action" type="button" id="createTaskMaterial">Buat materi</button></div>`;
+            $('#createTaskMaterial').onclick = () => goPage('materi', { subjectId: selectedSubjectId() });
+        } else {
+            help.innerHTML = materials.length === 1
+                ? '<p class="hint">Materi terisi otomatis karena hanya tersedia satu materi.</p>'
+                : '<p class="hint">Pilih salah satu materi yang menjadi dasar tugas.</p>';
+        }
+    };
+    $('#newSubject').onchange = updateTaskMaterials;
+    updateTaskMaterials();
     if (panel) {
         panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
         $('#newTitle')?.focus({ preventScroll: true });
     }
-    $('#cancelTaskCreate').onclick = () => $('#taskCreateForm').closest('.task-create-panel').remove();
+    $('#cancelTaskCreate').onclick = () => panel.remove();
     $('#taskCreateForm').onsubmit = async event => {
         event.preventDefault();
+        const materialId = $('#newMaterial').value;
+        if (!materialId) {
+            toast('Pilih atau buat materi terlebih dahulu.');
+            return;
+        }
+        const className = $('#newClass').value.trim();
         let submitBtn = $('#saveTaskBtn');
         submitBtn.disabled = true;
         submitBtn.textContent = 'Menyimpan tugas...';
@@ -626,8 +849,9 @@ addTaskForm = function () {
             let formData = new FormData();
             formData.append('title', $('#newTitle').value.trim());
             formData.append('instructions', $('#newDesc').value.trim());
-            formData.append('subject', $('#newSubject').value.trim());
-            formData.append('className', $('#newClass').value.trim());
+            formData.append('subjectId', selectedSubjectId());
+            formData.append('materialId', materialId);
+            formData.append('className', className);
             formData.append('category', $('#newCategory').value);
             formData.append('dueAt', new Date($('#newDue').value).toISOString());
             formData.append('maxScore', 100);
@@ -639,7 +863,7 @@ addTaskForm = function () {
             if (result.availableClasses) window.availableClasses = result.availableClasses;
             tasks = (result.assignments || []).map(mapAssignment);
             renderTasks();
-            toast('Tugas berhasil disimpan dan dikirim ke ' + $('#newClass').value.trim() + '!');
+            toast('Tugas berhasil disimpan dan dikirim ke ' + className + '!');
         } catch (error) {
             toast(error.message);
             submitBtn.disabled = false;
@@ -648,12 +872,101 @@ addTaskForm = function () {
     };
 };
 
+function geofenceCardHtml(compact = false) {
+    return `<section class="card geofence-card ${compact ? 'compact' : ''}">
+        <div class="card-title"><h3>Area absen sekolah</h3><small>RADIUS ${esc(schoolSettings.radius)} M</small></div>
+        <div class="geofence-visual" role="img" aria-label="Titik sekolah dengan radius absen ${esc(schoolSettings.radius)} meter">
+            <div class="geofence-ring ring-outer"></div><div class="geofence-ring ring-inner"></div>
+            <div class="geofence-cross cross-horizontal"></div><div class="geofence-cross cross-vertical"></div>
+            <div class="school-point"><span></span></div><div class="radius-label">R ${esc(schoolSettings.radius)} m</div>
+        </div>
+        <div class="geofence-details"><span><small>Titik sekolah</small><b>${esc(Number(schoolSettings.latitude).toFixed(6))}, ${esc(Number(schoolSettings.longitude).toFixed(6))}</b></span><span class="status status-selesai">Di luar area ditolak</span></div>
+        <p class="hint">Absen hanya dapat diproses ketika posisi perangkat berada di dalam radius ini dan akurasi GPS memenuhi batas sistem.</p>
+    </section>`;
+}
+
+function showAttendancePhotoError(image) {
+    const wrapper = image.closest('.attendance-photo-wrap');
+    if (!wrapper) return;
+    wrapper.classList.add('photo-unavailable');
+    image.hidden = true;
+    wrapper.querySelector('.photo-unavailable-label').hidden = false;
+}
+
+function bindAttendancePhotoFallbacks(container = document) {
+    container.querySelectorAll('img.attendance-photo').forEach(image => {
+        image.onerror = () => showAttendancePhotoError(image);
+        if (image.complete && image.naturalWidth === 0) showAttendancePhotoError(image);
+    });
+}
+
+function attendanceExportFormHtml(prefix = '') {
+    const key = prefix ? `${prefix}-` : '';
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    return `<section class="card attendance-export-card">
+        <div class="card-title"><h3>Ekspor laporan kehadiran</h3><small>EXCEL &amp; WORD</small></div>
+        <p class="muted">Pilih periode, kelas, dan status. Laporan berisi waktu, jarak dari titik sekolah, serta akurasi GPS.</p>
+        <div class="export-filter-grid">
+            <div><label class="field-label" for="${key}exportStartDate">Tanggal mulai</label><input class="field" id="${key}exportStartDate" type="date" value="${today.slice(0, 8)}01" max="${today}" required></div>
+            <div><label class="field-label" for="${key}exportEndDate">Tanggal akhir</label><input class="field" id="${key}exportEndDate" type="date" value="${today}" max="${today}" required></div>
+            <div><label class="field-label" for="${key}exportClass">Kelas</label><select class="field" id="${key}exportClass"><option value="">Semua kelas</option></select></div>
+            <div><label class="field-label" for="${key}exportStatus">Status</label><select class="field" id="${key}exportStatus"><option value="">Semua status</option><option value="DISETUJUI">Disetujui</option><option value="MENUNGGU">Menunggu</option><option value="DITOLAK">Ditolak</option></select></div>
+        </div>
+        <div class="export-actions"><button class="btn btn-primary" type="button" data-attendance-export="xlsx">Unduh Excel (.xlsx)</button><button class="btn btn-outline" type="button" data-attendance-export="doc">Unduh Word (.doc)</button></div>
+    </section>`;
+}
+
+function bindAttendanceExportForm(prefix = '') {
+    const key = prefix ? `${prefix}-` : '';
+    const classSelect = $(`#${key}exportClass`);
+    api('/api/classes').then(result => {
+        classSelect.innerHTML = '<option value="">Semua kelas</option>' + (result.classes || []).map(cls => `<option value="${esc(cls.name)}">${esc(cls.name)}</option>`).join('');
+    }).catch(() => {});
+    $$(`[data-attendance-export]`).filter(button => $(`#${key}exportStartDate`)?.closest('section').contains(button)).forEach(button => button.onclick = async () => {
+        const startDate = $(`#${key}exportStartDate`).value;
+        const endDate = $(`#${key}exportEndDate`).value;
+        if (!startDate || !endDate || startDate > endDate) return toast('Rentang tanggal laporan tidak valid.');
+        const params = new URLSearchParams({ startDate, endDate, format: button.dataset.attendanceExport });
+        const className = $(`#${key}exportClass`).value;
+        const status = $(`#${key}exportStatus`).value;
+        if (className) params.set('className', className);
+        if (status) params.set('status', status);
+        button.disabled = true;
+        const originalText = button.textContent;
+        button.textContent = 'Menyiapkan laporan...';
+        try {
+            const response = await fetch(`/api/admin/attendance/export?${params}`, { credentials: 'same-origin' });
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || 'Laporan gagal dibuat.');
+            }
+            const blob = await response.blob();
+            const disposition = response.headers.get('Content-Disposition') || '';
+            const fileName = disposition.match(/filename="?([^";]+)"?/i)?.[1] || `laporan-kehadiran-${startDate}-${endDate}.${button.dataset.attendanceExport}`;
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            toast('Laporan kehadiran berhasil diunduh.');
+        } catch (error) {
+            toast(error.message);
+        } finally {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    });
+}
+
 renderAttendance = function () {
     if (currentUser.role !== 'admin') return renderUserAttendance();
-    $('#pageContent').innerHTML = heading('PENGELOLAAN SEKOLAH', 'Foto Kehadiran Siswa', 'Tinjau absensi dan foto wajah siswa yang telah diverifikasi otomatis oleh sistem pengenalan wajah.') +
-    `<section class="card">
+    $('#pageContent').innerHTML = heading('PENGELOLAAN SEKOLAH', 'Foto Kehadiran Siswa', 'Periksa foto, lokasi, dan catatan siswa sebelum menyetujui kehadiran.') +
+    attendanceExportFormHtml() + `<section class="card" style="margin-top:18px">
         <div class="card-title">
-            <h3>Daftar Kehadiran Siswa (Verifikasi Otomatis Sistem)</h3>
+            <h3>Daftar Kehadiran Siswa (Verifikasi Admin)</h3>
             <button class="btn btn-outline" id="reloadAttendance">Muat ulang</button>
         </div>
         <div class="table-wrap">
@@ -682,23 +995,27 @@ renderAttendance = function () {
             $('#adminAttendanceRows').innerHTML = rows.map(row => `
                 <tr>
                     <td>
-                        <img src="/api/attendance/${encodeURIComponent(row.id)}/photo" class="attendance-thumb" alt="Foto wajah ${esc(row.name)}" data-preview-img="/api/attendance/${encodeURIComponent(row.id)}/photo">
+                        <div class="attendance-photo-wrap">
+                            <img src="/api/attendance/${encodeURIComponent(row.id)}/photo" class="attendance-thumb attendance-photo" alt="Foto wajah ${esc(row.name)}" data-preview-img="/api/attendance/${encodeURIComponent(row.id)}/photo">
+                            <span class="photo-unavailable-label" hidden>Foto rusak / tidak dapat dibaca</span>
+                        </div>
                     </td>
                     <td><b>${esc(row.name)}</b><br><small class="muted">${esc(row.email || '')}</small></td>
                     <td><span class="role-tag">${esc(row.detail || '-')}</span></td>
                     <td>${new Date(row.capturedAt).toLocaleString('id-ID')}<br><small class="muted">${esc(row.day)}</small></td>
-                    <td><span class="status ${row.verification === 'DISETUJUI' ? 'status-selesai' : (row.verification === 'DITOLAK' ? 'status-terlambat' : 'status-belum')}">${row.verification === 'DISETUJUI' ? '✓ Terverifikasi Sistem' : esc(row.verification)}</span></td>
+                    <td><span class="status ${row.verification === 'DISETUJUI' ? 'status-selesai' : (row.verification === 'DITOLAK' ? 'status-terlambat' : 'status-belum')}">${row.verification === 'DISETUJUI' ? '✓ Disetujui Admin' : esc(row.verification)}</span></td>
                     <td>
                         <div style="display:flex;gap:6px">
                             ${row.verification === 'DISETUJUI' ? `
-                                <button class="btn btn-outline" style="padding:5px 9px;font-size:11px" data-review-att="${row.id}" data-verification="DITOLAK">Tandai Tidak Sah</button>
+                                <button class="btn btn-outline" style="padding:5px 9px;font-size:11px" data-review-att="${row.id}" data-verification="DITOLAK">Tolak</button>
                             ` : `
-                                <button class="btn btn-primary" style="padding:5px 9px;font-size:11px" data-review-att="${row.id}" data-verification="DISETUJUI">✓ Pulihkan Status Sah</button>
+                                <button class="btn btn-primary" style="padding:5px 9px;font-size:11px" data-review-att="${row.id}" data-verification="DISETUJUI">✓ Setujui</button>
                             `}
                         </div>
                     </td>
                 </tr>
             `).join('') || '<tr><td colspan="6" class="empty-state">Belum ada pengajuan absensi hari ini.</td></tr>';
+            bindAttendancePhotoFallbacks($('#adminAttendanceRows'));
 
             $$('[data-review-att]').forEach(button => button.onclick = async () => {
                 try {
@@ -714,6 +1031,7 @@ renderAttendance = function () {
             });
 
             $$('[data-preview-img]').forEach(img => img.onclick = () => {
+                if (img.closest('.photo-unavailable')) return;
                 let lightbox = $('#mediaLightboxDialog');
                 let lightboxImg = $('#mediaLightboxImg');
                 if (lightbox && lightboxImg) {
@@ -726,6 +1044,7 @@ renderAttendance = function () {
         }
     };
 
+    bindAttendanceExportForm();
     $('#reloadAttendance').onclick = load;
     load();
 };
@@ -806,13 +1125,211 @@ async function renderAdminClasses() {
     loadClasses();
 }
 
+async function renderAcademicAdmin() {
+    if (currentUser.role !== 'admin') return goPage('beranda');
+    $('#pageContent').innerHTML = heading('ADMINISTRASI', 'Mata pelajaran', 'Kelola mata pelajaran yang dapat dipilih guru saat mendaftar.') + '<div class="empty-state">Memuat data akademik...</div>';
+    let data;
+    try {
+        data = await api('/api/subjects');
+    } catch (error) {
+        $('#pageContent').innerHTML = heading('ADMINISTRASI', 'Mata pelajaran', 'Gagal memuat data akademik.') + `<div class="empty-state error">${esc(error.message)}</div>`;
+        return;
+    }
+    availableSubjects = data.subjects || [];
+    const subjects = data.subjects || [];
+    $('#pageContent').innerHTML = heading('ADMINISTRASI', 'Mata pelajaran', 'Kelola mata pelajaran yang dapat dipilih guru saat mendaftar.') + `
+        <div class="grid two-col">
+            <section class="card">
+                <div class="card-title"><h3>Daftar mata pelajaran</h3><small>${subjects.length} MAPEL</small></div>
+                <div class="table-wrap"><table><thead><tr><th>Nama mata pelajaran</th><th>Aksi</th></tr></thead><tbody id="academicSubjectRows">
+                    ${subjects.map(subject => `<tr><td><b>${esc(subject.name)}</b></td><td><button class="text-action text-danger" data-delete-subject="${subject.id}" data-subject-name="${esc(subject.name)}">Hapus</button></td></tr>`).join('') || '<tr><td colspan="2" class="empty-state">Belum ada mata pelajaran.</td></tr>'}
+                </tbody></table></div>
+            </section>
+            <section class="card" style="align-self:start">
+                <div class="card-title"><h3>Tambah mata pelajaran</h3><small>DATA MASTER</small></div>
+                <form id="addSubjectForm" class="stack-form">
+                    <label class="field-label">Nama mata pelajaran</label>
+                    <input id="newSubjectName" class="field" maxlength="80" placeholder="Contoh: Pemrograman Dasar" required>
+                    <button class="btn btn-primary" type="submit">+ Tambah mata pelajaran</button>
+                </form>
+            </section>
+        </div>`;
+
+    $('#addSubjectForm').onsubmit = async event => {
+        event.preventDefault();
+        const name = $('#newSubjectName').value.trim();
+        try {
+            await api('/api/admin/subjects', { method: 'POST', body: JSON.stringify({ name }) });
+            $('#newSubjectName').value = '';
+            toast('Mata pelajaran berhasil ditambahkan.');
+            renderAcademicAdmin();
+        } catch (error) {
+            toast(error.message);
+        }
+    };
+    $$('[data-delete-subject]').forEach(button => button.onclick = async () => {
+        if (!confirm(`Hapus mata pelajaran "${button.dataset.subjectName}"?`)) return;
+        try {
+            await api(`/api/admin/subjects/${button.dataset.deleteSubject}`, { method: 'DELETE' });
+            toast('Mata pelajaran berhasil dihapus.');
+            renderAcademicAdmin();
+        } catch (error) {
+            toast(error.message);
+        }
+    });
+}
+
+async function renderMaterials(preferredSubjectId = '') {
+    const canCreate = currentUser.role === 'guru';
+    const canAddSubject = currentUser.role === 'admin';
+    const isAdmin = canAddSubject;
+    const filterId = preferredSubjectId === '' ? 'Semua' : Number(preferredSubjectId);
+    $('#pageContent').innerHTML = heading('PUSAT PEMBELAJARAN', 'Materi pembelajaran', 'Baca materi, buka tautan, dan unduh berkas yang dibagikan guru.', (canCreate || canAddSubject) ? '<button class="btn btn-primary" id="openMaterialCreate">+ Tambah materi</button>' : '') + '<div class="empty-state">Memuat materi...</div>';
+    let data;
+    try {
+        data = await api(`/api/materials${currentUser.role === 'guru' ? '?mine=1' : ''}`);
+    } catch (error) {
+        $('#pageContent').innerHTML = heading('PUSAT PEMBELAJARAN', 'Materi pembelajaran', 'Gagal memuat materi.') + `<div class="empty-state error">${esc(error.message)}</div>`;
+        return;
+    }
+    allMaterials = data.materials || [];
+    if (currentUser.role === 'guru') teacherMaterials = allMaterials;
+    const subjects = isAdmin ? availableSubjects : teacherSubjects;
+    const preselectNewSubject = isAdmin && subjects.length === 0;
+    const filtered = filterId === 'Semua' ? allMaterials : allMaterials.filter(material => material.subjectId === filterId);
+    const createForm = canCreate && (subjects.length || isAdmin) ? `
+        <section class="card material-create-card" id="materialCreateCard">
+            <div class="card-title"><h3>Tambah materi baru</h3><button class="text-action" id="closeMaterialCreate">Batal</button></div>
+            <form id="materialCreateForm" class="grid two-col">
+                <div>
+                    <label class="field-label" for="materialSubject">Mata pelajaran</label>
+                    <select id="materialSubject" class="field" required ${subjects.length === 1 && !isAdmin ? 'disabled' : ''}>
+                        ${subjects.map(subject => `<option value="${subject.id}" ${Number(subject.id) === filterId ? 'selected' : ''}>${esc(subject.name)}</option>`).join('')}
+                        ${isAdmin ? `<option value="__new__" ${preselectNewSubject ? 'selected' : ''}>＋ Tambah mata pelajaran</option>` : ''}
+                    </select>
+                    ${isAdmin ? `<div id="newMaterialSubjectGroup" class="${preselectNewSubject ? '' : 'hidden'}">
+                        <label class="field-label" for="newMaterialSubjectName">Nama mata pelajaran baru</label>
+                        <input id="newMaterialSubjectName" class="field" maxlength="80" placeholder="Contoh: Pemrograman Dasar" ${preselectNewSubject ? 'required' : ''}>
+                    </div>` : ''}
+                    ${subjects.length === 1 && !isAdmin ? '<p class="hint">Mata pelajaran terisi otomatis sesuai pilihan saat mendaftar.</p>' : isAdmin ? '<p class="hint">Mapel baru dapat dipilih guru saat mendaftar.</p>' : ''}
+                    <label class="field-label" for="materialTitle">Judul materi</label>
+                    <input id="materialTitle" class="field" required maxlength="150" placeholder="Judul materi...">
+                    <label class="field-label" for="materialUrl">Tautan materi (Opsional)</label>
+                    <input id="materialUrl" class="field" type="url" maxlength="500" placeholder="https://...">
+                    <label class="field-label" for="materialFile">Berkas materi (Opsional, maksimal 25MB)</label>
+                    <input id="materialFile" class="field" type="file">
+                </div>
+                <div>
+                    <label class="field-label" for="materialContent">Isi materi</label>
+                    <textarea id="materialContent" class="field" rows="9" required maxlength="20000" placeholder="Tulis penjelasan atau langkah belajar..."></textarea>
+                </div>
+                <div style="grid-column:1/-1"><button class="btn btn-primary" type="submit" id="saveMaterialBtn">Simpan materi</button></div>
+            </form>
+        </section>` : canAddSubject ? `
+        <section class="card material-create-card" id="materialCreateCard">
+            <div class="card-title"><h3>Tambah mata pelajaran</h3><button class="text-action" id="closeMaterialCreate">Batal</button></div>
+            <form id="adminSubjectCreateForm">
+                <label class="field-label" for="newMaterialSubjectName">Nama mata pelajaran baru</label>
+                <input id="newMaterialSubjectName" class="field" maxlength="80" placeholder="Contoh: Pemrograman Dasar" required>
+                <p class="hint">Mata pelajaran baru akan muncul saat guru mendaftar.</p>
+                <button class="btn btn-primary" type="submit" id="saveSubjectBtn">Simpan mata pelajaran</button>
+            </form>
+        </section>` : '';
+    $('#pageContent').innerHTML = heading('PUSAT PEMBELAJARAN', 'Materi pembelajaran', 'Baca materi, buka tautan, dan unduh berkas yang dibagikan guru.', (canCreate || canAddSubject) ? `<button class="btn btn-primary" id="openMaterialCreate">+ ${canAddSubject ? 'Tambah mapel' : 'Tambah materi'}</button>` : '') + createForm + `
+        <div class="filter-row material-filter-row">
+            <button class="filter-chip ${filterId === 'Semua' ? 'active' : ''}" data-material-filter="Semua">Semua</button>
+            ${subjects.map(subject => `<button class="filter-chip ${filterId === subject.id ? 'active' : ''}" data-material-filter="${subject.id}">${esc(subject.name)}</button>`).join('')}
+        </div>
+        <div class="card-title"><h3>Daftar materi</h3><small>${filtered.length} MATERI</small></div>
+        <div class="grid two-col material-grid">
+            ${filtered.map(material => `<article class="card material-card">
+                <div class="task-top"><span class="task-kind">${esc(material.subject)}</span>${material.hasFile ? '<span class="status status-selesai">Ada berkas</span>' : ''}</div>
+                <h3>${esc(material.title)}</h3>
+                <div class="material-content">${esc(material.content)}</div>
+                <div class="material-meta"><span>Guru: <b>${esc(material.teacherName)}</b></span><span>${new Date(material.createdAt).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}</span></div>
+                <div class="material-actions">
+                    ${material.url ? `<a class="btn btn-outline" href="${esc(material.url)}" target="_blank" rel="noopener noreferrer">Buka tautan</a>` : ''}
+                    ${material.hasFile ? `<a class="btn btn-outline" href="/api/materials/${encodeURIComponent(material.id)}/file" target="_blank" rel="noopener noreferrer">Unduh ${esc(material.fileOriginalName || 'berkas')}</a>` : ''}
+                    ${material.createdBy === currentUser.id ? `<button class="text-action text-danger" data-delete-material="${esc(material.id)}" data-material-title="${esc(material.title)}">Hapus</button>` : ''}
+                </div>
+            </article>`).join('') || '<div class="empty-state" style="grid-column:1/-1"><div class="empty-icon">▤</div><b>Belum ada materi pada mata pelajaran ini.</b></div>'}
+        </div>`;
+    const createCard = $('#materialCreateCard');
+    if ($('#openMaterialCreate')) $('#openMaterialCreate').onclick = () => {
+        if (!createCard) return toast('Belum ada mata pelajaran yang dapat dipilih.');
+        createCard.classList.toggle('hidden');
+        createCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (!createCard.classList.contains('hidden')) setTimeout(() => $(canAddSubject ? '#newMaterialSubjectName' : '#materialTitle')?.focus(), 200);
+    };
+    if ($('#closeMaterialCreate')) $('#closeMaterialCreate').onclick = () => createCard?.classList.add('hidden');
+    if ($('#adminSubjectCreateForm')) $('#adminSubjectCreateForm').onsubmit = async event => {
+        event.preventDefault();
+        const button = $('#saveSubjectBtn');
+        button.disabled = true;
+        button.textContent = 'Menyimpan...';
+        try {
+            const subject = await api('/api/admin/subjects', { method: 'POST', body: JSON.stringify({ name: $('#newMaterialSubjectName').value.trim() }) });
+            if (!availableSubjects.some(item => Number(item.id) === Number(subject.id))) availableSubjects.push(subject);
+            toast('Mata pelajaran berhasil ditambahkan.');
+            await renderMaterials();
+        } catch (error) {
+            button.disabled = false;
+            button.textContent = 'Simpan mata pelajaran';
+            toast(error.message);
+        }
+    };
+    if ($('#materialCreateForm')) $('#materialCreateForm').onsubmit = async event => {
+        event.preventDefault();
+        const subjectId = $('#materialSubject').value;
+        const formData = new FormData();
+        formData.append('subjectId', subjectId);
+        formData.append('title', $('#materialTitle').value.trim());
+        formData.append('content', $('#materialContent').value.trim());
+        formData.append('url', $('#materialUrl').value.trim());
+        const file = $('#materialFile').files[0];
+        if (file) formData.append('file', file);
+        const button = $('#saveMaterialBtn');
+        button.disabled = true;
+        button.textContent = 'Menyimpan...';
+        try {
+            await api('/api/materials', { method: 'POST', body: formData });
+            const teaching = await api('/api/teaching/me');
+            teacherSubjects = teaching.subjects || [];
+            teacherClasses = teaching.classes || [];
+            teacherMaterials = teaching.materials || [];
+            allMaterials = teaching.materials || [];
+            toast('Materi berhasil disimpan.');
+            await renderMaterials(subjectId);
+        } catch (error) {
+            button.disabled = false;
+            button.textContent = 'Simpan materi';
+            toast(error.message);
+        }
+    };
+    $$('[data-material-filter]').forEach(button => button.onclick = () => renderMaterials(button.dataset.materialFilter));
+    $$('[data-delete-material]').forEach(button => button.onclick = async () => {
+        if (!confirm(`Hapus materi "${button.dataset.materialTitle}"?`)) return;
+        button.disabled = true;
+        try {
+            await api(`/api/materials/${encodeURIComponent(button.dataset.deleteMaterial)}`, { method: 'DELETE' });
+            allMaterials = allMaterials.filter(material => material.id !== button.dataset.deleteMaterial);
+            teacherMaterials = teacherMaterials.filter(material => material.id !== button.dataset.deleteMaterial);
+            toast('Materi berhasil dihapus.');
+            renderMaterials(filterId);
+        } catch (error) {
+            button.disabled = false;
+            toast(error.message);
+        }
+    });
+}
+
 function renderHome() {
     let action = currentUser.role === 'guru' ? '<button class="btn btn-primary" data-page="tugas">＋ Tambah tugas</button>' : '';
     $('#pageContent').innerHTML = heading('KOMUNITAS SEKOLAH', 'Halo, ' + esc(currentUser.name.split(' ')[0]) + '! 👋', 'Apa yang sedang terjadi di sekolah hari ini?', action) +
     `<div class="grid three-col" style="margin-bottom:18px">
         ${stat('▤', topics.length, 'Topik dibagikan', 'Komunitas')}
         ${stat('♡', topics.reduce((a, t) => a + (t.likes || 0), 0), 'Suka dari warga', 'Aktif')}
-        ${stat('✳', '100%', 'Ruang anonim', 'Privasi')}
+        ${stat('✳', 'Admin', 'Akses identitas', 'Privasi')}
     </div>
     <div class="grid two-col">
         <section>
@@ -859,7 +1376,7 @@ function renderHome() {
             </div>
             <div class="side-note">
                 <h4>🛡 Privasi adalah prioritas</h4>
-                <p>Nama penulis dan pemberi komentar tidak ditampilkan. Identitas hanya dapat dibuka admin melalui laporan yang diverifikasi dan seluruh prosesnya dicatat.</p>
+                <p>Nama penulis dan pemberi komentar tidak ditampilkan kepada warga sekolah. Data penulis tetap tersimpan di server dan dapat diakses admin.</p>
             </div>
             <div class="card">
                 <div class="card-title"><h3>Menu cepat</h3></div>
@@ -957,6 +1474,7 @@ function renderTasks() {
                     </div>
                     <h3 style="margin-top:6px">${esc(t.title)}</h3>
                     <p style="font-size:13px;line-height:1.45;color:var(--muted,#94a3b8)">${esc(t.desc)}</p>
+                    ${t.materialTitle ? `<div class="task-material-label"><b>Materi:</b> ${esc(t.materialTitle)}</div>` : ''}
                     <div class="task-meta" style="margin-top:8px">
                         <span>▤ ${esc(t.subject)}${t.teacherName ? ` · Guru: ${esc(t.teacherName)}` : ''}</span>
                         <span>◷ Tenggat: ${prettyDate(t.due)}</span>
@@ -987,16 +1505,13 @@ function renderTasks() {
                         <button class="btn btn-primary" style="width:100%" data-view-submissions="${t.id}">
                             👥 Periksa Pengumpulan (${t.submissionCount || 0} Siswa)
                         </button>
-                        <button class="btn btn-outline" style="width:100%" data-edit-task="${t.id}">
-                            ⚙ Atur Status / Nilai Manual
-                        </button>
                     ` : ''}
                     ${currentUser.role === 'admin' ? `
                         <button class="btn btn-outline" style="width:100%" data-view-submissions="${t.id}">
                             👥 Lihat Pengumpulan (${t.submissionCount || 0})
                         </button>
                     ` : ''}
-                    ${(isTeacher || currentUser.role === 'admin') ? `
+                    ${isTeacher ? `
                         <button class="btn btn-outline" style="width:100%;color:#fda4af;border-color:rgba(244,63,94,0.35)" data-delete-task="${esc(t.id)}">
                             🗑 Hapus Tugas
                         </button>
@@ -1009,7 +1524,6 @@ function renderTasks() {
     $$('[data-task-filter]').forEach(b => b.onclick = () => { taskFilter = b.dataset.taskFilter; renderTasks() });
     $$('[data-task-category]').forEach(b => b.onclick = () => { taskCategory = b.dataset.taskCategory; renderTasks() });
     if ($('#addTaskBtn')) $('#addTaskBtn').onclick = addTaskForm;
-    $$('[data-edit-task]').forEach(b => b.onclick = () => editTask(b.dataset.editTask));
     $$('[data-submit-task]').forEach(b => b.onclick = () => openSubmitTaskModal(b.dataset.submitTask));
     $$('[data-view-submissions]').forEach(b => b.onclick = () => openSubmissionsModal(b.dataset.viewSubmissions));
     $$('[data-delete-task]').forEach(b => b.onclick = async () => {
@@ -1030,27 +1544,6 @@ function renderTasks() {
     });
 }
 function addTaskForm() { return window.addTaskForm ? window.addTaskForm() : null }
-function editTask(id) {
-    let t = tasks.find(x => x.id == id);
-    if (!t) return;
-    let status = prompt('Status siswa: Belum, Selesai, atau Terlambat', t.status);
-    if (status === null) return;
-    status = status.trim();
-    if (!['Belum', 'Selesai', 'Terlambat'].includes(status)) return toast('Status tidak dikenal.');
-    let score = prompt('Nilai 0–100 (kosongkan jika belum dinilai)', t.score ?? '');
-    if (score !== '' && score !== null) {
-        let n = Number(score);
-        if (!Number.isFinite(n) || n < 0 || n > 100) return toast('Nilai harus 0 sampai 100.');
-        t.score = n;
-        t.status = 'Selesai';
-    } else if (score === '') {
-        t.score = null;
-        t.status = status;
-    } else t.status = status;
-    persist();
-    renderTasks();
-    toast('Status dan nilai tugas diperbarui.');
-}
 function openSubmitTaskModal(taskId) {
     let t = tasks.find(x => x.id == taskId);
     if (!t) return;
@@ -1107,7 +1600,7 @@ function openSubmitTaskModal(taskId) {
                 <label class="field-label" style="margin-bottom:-4px">
                     ${hasSubmission ? 'Unggah File Pengganti / Revisi (Maks 25MB)' : 'Pilih File Tugas (PDF, Dokumen, Gambar, ZIP, dll - Maks 25MB)'}
                 </label>
-                <input id="submitFile" type="file" class="field" ${hasSubmission ? '' : 'required'} style="padding:8px">
+                <input id="submitFile" type="file" class="field" style="padding:8px">
 
                 <label class="field-label" style="margin-bottom:-4px">Catatan / Jawaban Teks Tambahan (Opsional)</label>
                 <textarea id="submitAnswerText" class="field" rows="3" placeholder="Tuliskan keterangan tambahan atau catatan untuk guru jika ada...">${esc(t.answerText || '')}</textarea>
@@ -1163,7 +1656,7 @@ function openSubmitTaskModal(taskId) {
             let updated = await api('/api/assignments');
             if (updated.availableClasses) window.availableClasses = updated.availableClasses;
             tasks = (updated.assignments || []).map(mapAssignment);
-            renderTasks();
+            if (currentPage === 'tugas') renderTasks();
         } catch (err) {
             toast(err.message);
             btn.disabled = false;
@@ -1174,6 +1667,8 @@ function openSubmitTaskModal(taskId) {
 async function openSubmissionsModal(taskId) {
     let t = tasks.find(x => x.id == taskId);
     if (!t) return;
+    const canGrade = currentUser.role === 'guru';
+    const maxScore = Number(t.maxScore) || 100;
     let old = $('#submissionsModalDialog');
     if (old) old.remove();
 
@@ -1207,6 +1702,7 @@ async function openSubmissionsModal(taskId) {
         let res = await api(`/api/assignments/${t.id}/submissions`);
         let subs = res.submissions || [];
         let container = $('#submissionsListContainer');
+        if (!container?.isConnected || !modal.open) return;
 
         if (subs.length === 0) {
             container.innerHTML = `
@@ -1238,7 +1734,7 @@ async function openSubmissionsModal(taskId) {
                             </div>
                             <div>
                                 ${sub.score !== null ?
-                `<span class="status status-selesai" style="font-size:13px;font-weight:700">Nilai: ${sub.score} / 100</span>` :
+                `<span class="status status-selesai" style="font-size:13px;font-weight:700">Nilai: ${sub.score} / ${maxScore}</span>` :
                 `<span class="status status-belum" style="font-size:13px">Belum Dinilai</span>`
             }
                             </div>
@@ -1260,16 +1756,17 @@ async function openSubmissionsModal(taskId) {
                             ` : ''}
                         </div>
 
+                        ${canGrade ? `
                         <form class="grade-submission-form" data-sub-id="${sub.id}" style="margin-top:12px;display:flex;flex-direction:column;gap:8px">
                             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
                                 <label style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px">
-                                    Nilai (0–100):
-                                    <input type="number" min="0" max="100" class="field compact-input" style="width:75px" value="${sub.score ?? ''}" placeholder="0-100" required>
+                                    Nilai (0–${maxScore}):
+                                    <input type="number" min="0" max="${maxScore}" class="field compact-input" style="width:75px" value="${sub.score ?? ''}" placeholder="0-${maxScore}" required>
                                 </label>
                                 <input type="text" class="field" style="flex:1;min-width:200px;font-size:12px" placeholder="Beri catatan / koreksi untuk siswa..." value="${esc(sub.feedback || '')}">
                                 <button type="submit" class="btn btn-primary" style="font-size:12px;padding:6px 14px">Simpan Nilai</button>
                             </div>
-                        </form>
+                        </form>` : ''}
                     </article>
                 `).join('')}
             </div>
@@ -1295,12 +1792,13 @@ async function openSubmissionsModal(taskId) {
                         })
                     });
                     toast('Nilai dan catatan berhasil disimpan!');
-                    openSubmissionsModal(taskId);
-
-                    let updated = await api('/api/assignments');
-                    if (updated.availableClasses) window.availableClasses = updated.availableClasses;
-                    tasks = (updated.assignments || []).map(mapAssignment);
-                    renderTasks();
+                    if (modal.isConnected && modal.open) openSubmissionsModal(taskId);
+                    if (currentPage === 'tugas') {
+                        let updated = await api('/api/assignments');
+                        if (updated.availableClasses) window.availableClasses = updated.availableClasses;
+                        tasks = (updated.assignments || []).map(mapAssignment);
+                        renderTasks();
+                    }
                 } catch (err) {
                     toast(err.message);
                     submitBtn.disabled = false;
@@ -1309,7 +1807,7 @@ async function openSubmissionsModal(taskId) {
             };
         });
     } catch (err) {
-        $('#submissionsListContainer').innerHTML = `<div class="empty-state" style="color:var(--red)">Gagal memuat pengumpulan: ${esc(err.message)}</div>`;
+        if ($('#submissionsListContainer')?.isConnected) $('#submissionsListContainer').innerHTML = `<div class="empty-state" style="color:var(--red)">Gagal memuat pengumpulan: ${esc(err.message)}</div>`;
     }
 }
 function renderProfile() {
@@ -1362,12 +1860,14 @@ async function renderReports() {
                 ].map(([s, n]) => `<div style="display:flex;justify-content:space-between;padding:15px 0;border-bottom:1px solid var(--line);font-size:12px"><span>${esc(s)}</span><b>${esc(n)}</b></div>`).join('')}
             </section>
         </div>
+        <div style="margin-top:18px">${attendanceExportFormHtml('reports')}</div>
         <div class="card" style="margin-top:18px">
             <div class="card-title"><h3>Ekspor ringkasan</h3><small>DOKUMEN RESMI DB</small></div>
             <p class="muted">Unduh data ringkasan real-time dari database sekolah_hub sebagai file dokumen (.doc) yang bisa langsung dibuka di Microsoft Word atau Google Docs.</p>
             <button class="btn btn-primary" id="exportReport">↓ Unduh laporan Dokumen</button>
         </div>`;
 
+    bindAttendanceExportForm('reports');
     $('#exportReport').onclick = () => {
         const tanggal = new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
         const rows = [
@@ -1480,35 +1980,101 @@ async function removeAttendancePhoto(id) { let db = await openAttendancePhotoDb(
 async function loadAttendancePhoto(id) { let db = await openAttendancePhotoDb(); let photo = await new Promise((resolve, reject) => { let transaction = db.transaction('photos', 'readonly'), request = transaction.objectStore('photos').get(id); request.onsuccess = () => resolve(request.result?.blob || null); request.onerror = () => reject(request.error) }); db.close(); return photo }
 async function hydrateAttendancePhotos() { for (let image of document.querySelectorAll('[data-photo-id]')) { try { let photo = await loadAttendancePhoto(image.dataset.photoId); if (!photo) continue; let url = URL.createObjectURL(photo); attendancePhotoUrls.push(url); image.src = url; image.onclick = () => { let preview = $('#photoPreview'); preview.src = url; $('#photoDialog').showModal() } } catch (error) { toast('Foto tersimpan tidak dapat dibuka di browser ini.') } } }
 renderUserAttendance = function () {
-    if (cameraStream) { cameraStream.getTracks().forEach(track => track.stop()); cameraStream = null } attendancePhotoUrls.forEach(url => URL.revokeObjectURL(url)); attendancePhotoUrls = []; let history = JSON.parse(localStorage.getItem('sh_my_attendance') || '[]'); $('#pageContent').innerHTML = heading('KEHADIRAN HARI INI', 'Foto kehadiran', 'Ambil foto diri untuk catatan kehadiran. Foto disimpan hanya di browser/perangkat ini.') + `<div class="attendance-layout"><section class="card attendance-camera-card"><div class="card-title"><h3>Ambil foto</h3><span class="demo-chip">MENUNGGU VERIFIKASI</span></div><div class="camera-frame"><video id="attendanceVideo" autoplay muted playsinline></video><div class="face-guide"><span></span></div><div id="cameraHint" class="camera-hint">Aktifkan kamera untuk memulai</div></div><div class="camera-actions"><button class="btn btn-outline" id="startCamera">Aktifkan kamera</button><button class="btn btn-outline" id="checkLocation">Periksa lokasi</button><button class="btn btn-primary" id="captureAttendance" disabled>Ambil & simpan foto</button></div><label class="photo-consent"><input id="photoConsent" type="checkbox"><span>Saya setuju foto kehadiran ini disimpan di browser/perangkat ini.</span></label><div class="location-status" id="locationStatus"><span class="status-dot"></span><span>Lokasi opsional belum diperiksa</span></div><p class="hint">Foto tidak diunggah atau dibagikan ke sekolah. Simpanan ini bukan bukti absen resmi dan belum diverifikasi oleh admin/server.</p></section><aside class="grid attendance-aside"><section class="card"><div class="card-title"><h3>Ketentuan sekolah</h3><small>HARI INI</small></div><div class="setting-row"><span>Jam absen</span><b>${schoolSettings.open}–10:00 WIB</b></div><div class="setting-row"><span>Batas terlambat</span><b>${schoolSettings.late} WIB</b></div><div class="setting-row"><span>Radius lokasi</span><b>${schoolSettings.radius} meter</b></div><div class="side-note"><h4>Privasi foto</h4><p>Foto disimpan lokal menggunakan penyimpanan browser. Hapus data situs browser untuk menghapus seluruh foto.</p></div></section><section class="card"><div class="card-title"><h3>Riwayat foto</h3><small>${history.length} CATATAN</small></div>${history.slice(0, 8).map(item => `<div class="history-row"><span class="history-check">◷</span><span><b>${esc(item.status)}</b><small>${esc(item.date)} · ${esc(item.time)}</small></span>${item.photoId ? `<img class="attendance-thumb" data-photo-id="${esc(item.photoId)}" alt="Foto kehadiran ${esc(item.date)}">` : ''}</div>`).join('') || '<div class="empty-state" style="padding:15px 0">Belum ada foto kehadiran.</div>'}</section></aside></div><dialog id="photoDialog" class="photo-dialog"><button class="photo-close" id="closePhotoDialog" aria-label="Tutup foto">×</button><img id="photoPreview" alt="Foto kehadiran tersimpan"></dialog>`;
+    if (cameraStream) { cameraStream.getTracks().forEach(track => track.stop()); cameraStream = null } attendancePhotoUrls.forEach(url => URL.revokeObjectURL(url)); attendancePhotoUrls = []; let history = JSON.parse(localStorage.getItem('sh_my_attendance') || '[]'); $('#pageContent').innerHTML = heading('KEHADIRAN HARI INI', 'Foto kehadiran', 'Ambil foto diri untuk catatan kehadiran. Foto disimpan hanya di browser/perangkat ini.') + `<div class="attendance-layout"><section class="card attendance-camera-card"><div class="card-title"><h3>Ambil foto</h3><span class="demo-chip">MENUNGGU VERIFIKASI</span></div><div class="camera-frame"><video id="attendanceVideo" autoplay muted playsinline></video><div class="face-guide"><span></span></div><div id="cameraHint" class="camera-hint">Aktifkan kamera untuk memulai</div></div><div class="camera-actions"><button class="btn btn-outline" id="startCamera">Aktifkan kamera</button><button class="btn btn-outline" id="checkLocation">Periksa lokasi</button><button class="btn btn-primary" id="captureAttendance" disabled>Ambil & simpan foto</button></div><label class="photo-consent"><input id="photoConsent" type="checkbox"><span>Saya setuju foto kehadiran ini disimpan di browser/perangkat ini.</span></label><div class="location-status" id="locationStatus"><span class="status-dot"></span><span>Lokasi opsional belum diperiksa</span></div><p class="hint">Foto tidak diunggah atau dibagikan ke sekolah. Simpanan ini bukan bukti absen resmi dan belum diverifikasi oleh admin/server.</p></section><aside class="grid attendance-aside"><section class="card"><div class="card-title"><h3>Ketentuan sekolah</h3><small>HARI INI</small></div><div class="setting-row"><span>Jam absen</span><b>${schoolSettings.open}–10:00 WIB</b></div><div class="setting-row"><span>Batas terlambat</span><b>${schoolSettings.late} WIB</b></div><div class="setting-row"><span>Radius lokasi</span><b>${schoolSettings.radius} meter</b></div><div class="side-note"><h4>Privasi foto</h4><p>Foto disimpan lokal menggunakan penyimpanan browser. Hapus data situs browser untuk menghapus seluruh foto.</p></div></section>${geofenceCardHtml(true)}<section class="card"><div class="card-title"><h3>Riwayat foto</h3><small>${history.length} CATATAN</small></div>${history.slice(0, 8).map(item => `<div class="history-row"><span class="history-check">◷</span><span><b>${esc(item.status)}</b><small>${esc(item.date)} · ${esc(item.time)}</small></span>${item.photoId ? `<img class="attendance-thumb" data-photo-id="${esc(item.photoId)}" alt="Foto kehadiran ${esc(item.date)}">` : ''}</div>`).join('') || '<div class="empty-state" style="padding:15px 0">Belum ada foto kehadiran.</div>'}</section></aside></div><dialog id="photoDialog" class="photo-dialog"><button class="photo-close" id="closePhotoDialog" aria-label="Tutup foto">×</button><img id="photoPreview" alt="Foto kehadiran tersimpan"></dialog>`;
     let consent = $('#photoConsent'), capture = $('#captureAttendance'); consent.onchange = () => { capture.disabled = !consent.checked || !cameraStream }; $('#closePhotoDialog').onclick = () => $('#photoDialog').close();
     $('#startCamera').onclick = async () => { try { if (!navigator.mediaDevices?.getUserMedia) throw new Error('secure-context'); cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false }); $('#attendanceVideo').srcObject = cameraStream; $('#cameraHint').classList.add('hidden'); capture.disabled = !consent.checked; toast('Kamera aktif. Foto hanya tersimpan di browser ini.') } catch (error) { toast(error.name === 'NotAllowedError' ? 'Izin kamera ditolak. Aktifkan melalui pengaturan browser.' : 'Kamera memerlukan HTTPS atau localhost dan perangkat yang mendukung.') } };
     $('#checkLocation').onclick = () => { if (!navigator.geolocation) return toast('Browser ini tidak mendukung lokasi.'); $('#locationStatus').innerHTML = '<span class="status-dot pending"></span><span>Memeriksa lokasi...</span>'; navigator.geolocation.getCurrentPosition(position => { currentPosition = position.coords; let distance = Math.round(distanceMeters(position.coords.latitude, position.coords.longitude, Number(schoolSettings.latitude), Number(schoolSettings.longitude))), accuracy = Math.round(position.coords.accuracy); $('#locationStatus').innerHTML = `<span class="status-dot ${distance <= schoolSettings.radius && accuracy <= 50 ? 'good' : 'warning'}"></span><span>${distance <= schoolSettings.radius && accuracy <= 50 ? 'Dalam radius sekolah' : 'Di luar batas atau kurang akurat'} · ${distance} m · akurasi ${accuracy} m</span>` }, () => { $('#locationStatus').innerHTML = '<span class="status-dot warning"></span><span>Lokasi tidak dapat diakses. Periksa izin browser.</span>' }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }) };
     capture.onclick = async () => { if (!cameraStream) return toast('Aktifkan kamera sebelum mengambil foto.'); if (!consent.checked) return toast('Persetujuan penyimpanan foto diperlukan.'); let video = $('#attendanceVideo'); if (!video.videoWidth) return toast('Kamera belum siap. Coba lagi sebentar.'); let today = new Date(), dayKey = today.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }), dayIso = today.toISOString().slice(0, 10), records = JSON.parse(localStorage.getItem('sh_my_attendance') || '[]'); if (records.some(item => item.dayIso === dayIso && item.photoId)) return toast('Foto kehadiran hari ini sudah tersimpan.'); capture.disabled = true; try { let canvas = document.createElement('canvas'), width = Math.min(video.videoWidth, 1280); canvas.width = width; canvas.height = Math.round(width * video.videoHeight / video.videoWidth); canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height); let blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .82)); if (!blob) throw new Error('capture-failed'); let photoId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`; await saveAttendancePhoto(photoId, blob); let time = today.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }); records.unshift({ photoId, dayIso, date: dayKey, time, status: 'Menunggu verifikasi' }); localStorage.setItem('sh_my_attendance', JSON.stringify(records)); renderUserAttendance(); toast('Foto tersimpan di browser ini; status menunggu verifikasi.') } catch (error) { capture.disabled = false; toast('Foto gagal disimpan. Periksa ruang penyimpanan browser.') } }; hydrateAttendancePhotos()
 }
-function persistAdminData() { localStorage.setItem('sh_accounts', JSON.stringify(adminAccounts)); localStorage.setItem('sh_settings', JSON.stringify(schoolSettings)); localStorage.setItem('sh_unlocks', JSON.stringify(identityRequests)) }
-function persistAdminData() { localStorage.setItem('sh_accounts', JSON.stringify(adminAccounts)); localStorage.setItem('sh_settings', JSON.stringify(schoolSettings)); localStorage.setItem('sh_unlocks', JSON.stringify(identityRequests)) }
+function persistAdminData() { localStorage.setItem('sh_settings', JSON.stringify(schoolSettings)); localStorage.setItem('sh_unlocks', JSON.stringify(identityRequests)) }
 renderUserAttendance = function () {
-    if (cameraStream) { cameraStream.getTracks().forEach(track => track.stop()); cameraStream = null } attendancePhotoUrls.forEach(url => URL.revokeObjectURL(url)); attendancePhotoUrls = []; let history = JSON.parse(localStorage.getItem('sh_my_attendance') || '[]'); $('#pageContent').innerHTML = heading('KEHADIRAN HARI INI', 'Foto kehadiran', 'Ambil foto diri untuk catatan kehadiran. Foto disimpan hanya di browser/perangkat ini.') + `<div class="attendance-layout"><section class="card attendance-camera-card"><div class="card-title"><h3>Ambil foto</h3><span class="demo-chip">MENUNGGU VERIFIKASI</span></div><div class="camera-frame"><video id="attendanceVideo" autoplay muted playsinline></video><div class="face-guide"><span></span></div><div id="cameraHint" class="camera-hint">Aktifkan kamera untuk memulai</div></div><div class="camera-actions"><button class="btn btn-outline" id="startCamera">Aktifkan kamera</button><button class="btn btn-outline" id="checkLocation">Periksa lokasi</button><button class="btn btn-primary" id="captureAttendance" disabled>Ambil & simpan foto</button></div><label class="photo-consent"><input id="photoConsent" type="checkbox"><span>Saya setuju foto kehadiran ini disimpan di browser/perangkat ini.</span></label><div class="location-status" id="locationStatus"><span class="status-dot"></span><span>Lokasi opsional belum diperiksa</span></div><p class="hint">Foto tidak diunggah atau dibagikan ke sekolah. Simpanan ini bukan bukti absen resmi dan belum diverifikasi oleh admin/server.</p></section><aside class="grid attendance-aside"><section class="card"><div class="card-title"><h3>Ketentuan sekolah</h3><small>HARI INI</small></div><div class="setting-row"><span>Jam absen</span><b>${schoolSettings.open}–10:00 WIB</b></div><div class="setting-row"><span>Batas terlambat</span><b>${schoolSettings.late} WIB</b></div><div class="setting-row"><span>Radius lokasi</span><b>${schoolSettings.radius} meter</b></div><div class="side-note"><h4>Privasi foto</h4><p>Foto disimpan lokal menggunakan penyimpanan browser. Hapus foto dari riwayat kapan saja atau hapus data situs browser.</p></div></section><section class="card"><div class="card-title"><h3>Riwayat foto</h3><small>${history.length} CATATAN</small></div>${history.slice(0, 8).map(item => `<div class="history-row"><span class="history-check">◷</span><span><b>${esc(item.status)}</b><small>${esc(item.date)} · ${esc(item.time)}</small></span>${item.photoId ? `<img class="attendance-thumb" data-photo-id="${esc(item.photoId)}" alt="Foto kehadiran ${esc(item.date)}"><button class="photo-delete" data-photo-delete="${esc(item.photoId)}" aria-label="Hapus foto kehadiran ${esc(item.date)}" title="Hapus foto">×</button>` : ''}</div>`).join('') || '<div class="empty-state" style="padding:15px 0">Belum ada foto kehadiran.</div>'}</section></aside></div><dialog id="photoDialog" class="photo-dialog"><button class="photo-close" id="closePhotoDialog" aria-label="Tutup foto">×</button><img id="photoPreview" alt="Foto kehadiran tersimpan"></dialog>`;
+    if (cameraStream) { cameraStream.getTracks().forEach(track => track.stop()); cameraStream = null } attendancePhotoUrls.forEach(url => URL.revokeObjectURL(url)); attendancePhotoUrls = []; let history = JSON.parse(localStorage.getItem('sh_my_attendance') || '[]'); $('#pageContent').innerHTML = heading('KEHADIRAN HARI INI', 'Foto kehadiran', 'Ambil foto diri untuk catatan kehadiran. Foto disimpan hanya di browser/perangkat ini.') + `<div class="attendance-layout"><section class="card attendance-camera-card"><div class="card-title"><h3>Ambil foto</h3><span class="demo-chip">MENUNGGU VERIFIKASI</span></div><div class="camera-frame"><video id="attendanceVideo" autoplay muted playsinline></video><div class="face-guide"><span></span></div><div id="cameraHint" class="camera-hint">Aktifkan kamera untuk memulai</div></div><div class="camera-actions"><button class="btn btn-outline" id="startCamera">Aktifkan kamera</button><button class="btn btn-outline" id="checkLocation">Periksa lokasi</button><button class="btn btn-primary" id="captureAttendance" disabled>Ambil & simpan foto</button></div><label class="photo-consent"><input id="photoConsent" type="checkbox"><span>Saya setuju foto kehadiran ini disimpan di browser/perangkat ini.</span></label><div class="location-status" id="locationStatus"><span class="status-dot"></span><span>Lokasi opsional belum diperiksa</span></div><p class="hint">Foto tidak diunggah atau dibagikan ke sekolah. Simpanan ini bukan bukti absen resmi dan belum diverifikasi oleh admin/server.</p></section><aside class="grid attendance-aside"><section class="card"><div class="card-title"><h3>Ketentuan sekolah</h3><small>HARI INI</small></div><div class="setting-row"><span>Jam absen</span><b>${schoolSettings.open}–10:00 WIB</b></div><div class="setting-row"><span>Batas terlambat</span><b>${schoolSettings.late} WIB</b></div><div class="setting-row"><span>Radius lokasi</span><b>${schoolSettings.radius} meter</b></div><div class="side-note"><h4>Privasi foto</h4><p>Foto disimpan lokal menggunakan penyimpanan browser. Hapus foto dari riwayat kapan saja atau hapus data situs browser.</p></div></section>${geofenceCardHtml(true)}<section class="card"><div class="card-title"><h3>Riwayat foto</h3><small>${history.length} CATATAN</small></div>${history.slice(0, 8).map(item => `<div class="history-row"><span class="history-check">◷</span><span><b>${esc(item.status)}</b><small>${esc(item.date)} · ${esc(item.time)}</small></span>${item.photoId ? `<img class="attendance-thumb" data-photo-id="${esc(item.photoId)}" alt="Foto kehadiran ${esc(item.date)}"><button class="photo-delete" data-photo-delete="${esc(item.photoId)}" aria-label="Hapus foto kehadiran ${esc(item.date)}" title="Hapus foto">×</button>` : ''}</div>`).join('') || '<div class="empty-state" style="padding:15px 0">Belum ada foto kehadiran.</div>'}</section></aside></div><dialog id="photoDialog" class="photo-dialog"><button class="photo-close" id="closePhotoDialog" aria-label="Tutup foto">×</button><img id="photoPreview" alt="Foto kehadiran tersimpan"></dialog>`;
     let consent = $('#photoConsent'), capture = $('#captureAttendance'); consent.onchange = () => { capture.disabled = !consent.checked || !cameraStream }; $('#closePhotoDialog').onclick = () => $('#photoDialog').close(); $$('[data-photo-delete]').forEach(button => button.onclick = async () => { let id = button.dataset.photoDelete; try { await removeAttendancePhoto(id); let saved = JSON.parse(localStorage.getItem('sh_my_attendance') || '[]'); localStorage.setItem('sh_my_attendance', JSON.stringify(saved.filter(item => item.photoId !== id))); renderUserAttendance(); toast('Foto kehadiran dihapus dari browser.') } catch (error) { toast('Foto tidak dapat dihapus saat ini.') } });
     $('#startCamera').onclick = async () => { try { if (!navigator.mediaDevices?.getUserMedia) throw new Error('secure-context'); cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false }); $('#attendanceVideo').srcObject = cameraStream; $('#cameraHint').classList.add('hidden'); capture.disabled = !consent.checked; toast('Kamera aktif. Foto hanya tersimpan di browser ini.') } catch (error) { toast(error.name === 'NotAllowedError' ? 'Izin kamera ditolak. Aktifkan melalui pengaturan browser.' : 'Kamera memerlukan HTTPS atau localhost dan perangkat yang mendukung.') } };
     $('#checkLocation').onclick = () => { if (!navigator.geolocation) return toast('Browser ini tidak mendukung lokasi.'); $('#locationStatus').innerHTML = '<span class="status-dot pending"></span><span>Memeriksa lokasi...</span>'; navigator.geolocation.getCurrentPosition(position => { currentPosition = position.coords; let distance = Math.round(distanceMeters(position.coords.latitude, position.coords.longitude, Number(schoolSettings.latitude), Number(schoolSettings.longitude))), accuracy = Math.round(position.coords.accuracy); $('#locationStatus').innerHTML = `<span class="status-dot ${distance <= schoolSettings.radius && accuracy <= 50 ? 'good' : 'warning'}"></span><span>${distance <= schoolSettings.radius && accuracy <= 50 ? 'Dalam radius sekolah' : 'Di luar batas atau kurang akurat'} · ${distance} m · akurasi ${accuracy} m</span>` }, () => { $('#locationStatus').innerHTML = '<span class="status-dot warning"></span><span>Lokasi tidak dapat diakses. Periksa izin browser.</span>' }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }) };
     capture.onclick = async () => { if (!cameraStream) return toast('Aktifkan kamera sebelum mengambil foto.'); if (!consent.checked) return toast('Persetujuan penyimpanan foto diperlukan.'); let video = $('#attendanceVideo'); if (!video.videoWidth) return toast('Kamera belum siap. Coba lagi sebentar.'); let today = new Date(), dayKey = today.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }), dayIso = today.toISOString().slice(0, 10), records = JSON.parse(localStorage.getItem('sh_my_attendance') || '[]'); if (records.some(item => item.dayIso === dayIso && item.photoId)) return toast('Foto kehadiran hari ini sudah tersimpan.'); capture.disabled = true; try { let canvas = document.createElement('canvas'), width = Math.min(video.videoWidth, 1280); canvas.width = width; canvas.height = Math.round(width * video.videoHeight / video.videoWidth); canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height); let blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .82)); if (!blob) throw new Error('capture-failed'); let photoId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`; await saveAttendancePhoto(photoId, blob); let time = today.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }); records.unshift({ photoId, dayIso, date: dayKey, time, status: 'Menunggu verifikasi' }); localStorage.setItem('sh_my_attendance', JSON.stringify(records)); renderUserAttendance(); toast('Foto tersimpan di browser ini; status menunggu verifikasi.') } catch (error) { capture.disabled = false; toast('Foto gagal disimpan. Periksa ruang penyimpanan browser.') } }; hydrateAttendancePhotos()
 }
-function renderAdminAccounts() {
-    let pending = adminAccounts.filter(a => a.status === 'Menunggu').length; $('#pageContent').innerHTML = heading('ADMINISTRASI', 'Pengelolaan akun', `${adminAccounts.length} akun · ${pending} menunggu verifikasi.`) + `<section class="card"><div class="card-title"><h3>Impor data warga</h3><small>CSV · MODE DEMO</small></div><p class="muted">Gunakan kolom nama,email,peran,nomor_induk,bidang. Validasi dan perubahan hanya berlaku di browser ini.</p><div class="import-row"><input id="accountCsv" class="field" type="file" accept=".csv,text/csv"><button class="btn btn-primary" id="importAccounts">Validasi & impor</button></div><div id="importResult" class="hint"></div></section><section class="card" style="margin-top:18px"><div class="card-title"><h3>Daftar akun</h3><input id="accountSearch" class="field compact-input" placeholder="Cari nama atau nomor induk"></div><div class="table-wrap"><table><thead><tr><th>Nama</th><th>Peran</th><th>Nomor induk</th><th>Kelas / bidang</th><th>Status</th><th>Aksi</th></tr></thead><tbody id="accountRows">${renderAccountRows(adminAccounts)}</tbody></table></div></section>`;
-    function bindAccountActions() { $$('[data-account-status]').forEach(btn => btn.onclick = () => { let account = adminAccounts[Number(btn.dataset.accountStatus)]; account.status = account.status === 'Aktif' ? 'Nonaktif' : 'Aktif'; persistAdminData(); renderAdminAccounts() }); $$('[data-account-reset]').forEach(btn => btn.onclick = () => { let temporary = `Edu${Math.random().toString(36).slice(2, 8)}!`; alert(`Kata sandi sementara demo (ditampilkan sekali): ${temporary}`); toast('Reset simulasi selesai.') }) }
-    $('#accountSearch').oninput = () => { let q = $('#accountSearch').value.toLowerCase(), filtered = adminAccounts.filter(a => (a.name + ' ' + a.identity + ' ' + a.detail).toLowerCase().includes(q)); $('#accountRows').innerHTML = renderAccountRows(filtered); bindAccountActions() }; bindAccountActions();
-    $('#importAccounts').onclick = async () => { let file = $('#accountCsv').files[0]; if (!file) return toast('Pilih file CSV terlebih dahulu.'); if (file.size > 2 * 1024 * 1024) return toast('Ukuran CSV maksimal 2 MB.'); let parsed = parseCsv(await file.text()), header = parsed.shift()?.map(value => value.trim().toLowerCase()) || [], required = ['nama', 'email', 'peran', 'nomor_induk', 'bidang']; if (!required.every(column => header.includes(column))) return $('#importResult').textContent = 'Format kolom tidak sesuai. Periksa nama,email,peran,nomor_induk,bidang.'; if (parsed.length > 1000) return $('#importResult').textContent = 'Maksimal 1.000 baris per impor.'; let added = 0, failed = 0; parsed.forEach(row => { let record = Object.fromEntries(header.map((key, index) => [key, (row[index] || '').trim()])); if (!record.nama || !record.email || !record.peran || !record.nomor_induk || !record.bidang || adminAccounts.some(a => a.email === record.email)) { failed++; return } adminAccounts.push({ name: record.nama, email: record.email, role: record.peran, identity: record.nomor_induk, detail: record.bidang, status: 'Aktif' }); added++ }); persistAdminData(); $('#importResult').textContent = `${added} akun berhasil ditambahkan · ${failed} baris ditolak.`; renderAdminAccounts(); toast('Impor demo selesai.') };
+async function renderAdminAccounts() {
+    $('#pageContent').innerHTML = heading('ADMINISTRASI', 'Pengelolaan akun', 'Aktivasi, nonaktifkan, reset sandi, dan hapus akun warga sekolah.') + '<div class="empty-state">Memuat akun dari server...</div>';
+    try {
+        const result = await api('/api/admin/accounts');
+        if (currentPage !== 'akun') return;
+        adminAccounts = result.accounts || [];
+        const pending = adminAccounts.filter(account => account.status === 'PENDING').length;
+        $('#pageContent').innerHTML = heading('ADMINISTRASI', 'Pengelolaan akun', `${adminAccounts.length} akun · ${pending} menunggu aktivasi.`) + `
+            <section class="card">
+                <div class="card-title"><h3>Daftar akun</h3><input id="accountSearch" class="field compact-input" aria-label="Cari akun" placeholder="Cari nama, email, atau nomor induk"></div>
+                <div class="table-wrap"><table><thead><tr><th>Nama</th><th>Peran</th><th>Nomor induk</th><th>Kelas / bidang</th><th>Status</th><th>Aksi</th></tr></thead><tbody id="accountRows">${renderAccountRows(adminAccounts)}</tbody></table></div>
+            </section>`;
+        $('#accountSearch').oninput = () => {
+            const query = $('#accountSearch').value.trim().toLowerCase();
+            const filtered = adminAccounts.filter(account => `${account.name} ${account.email} ${account.identityNumber} ${account.detail}`.toLowerCase().includes(query));
+            $('#accountRows').innerHTML = renderAccountRows(filtered);
+            bindAccountActions();
+        };
+        bindAccountActions();
+    } catch (error) {
+        if (currentPage === 'akun') $('#pageContent').innerHTML = heading('ADMINISTRASI', 'Pengelolaan akun', 'Gagal memuat akun.') + `<div class="empty-state error">${esc(error.message)}</div>`;
+    }
 }
-function renderAccountRows(accounts) { return accounts.map(account => { let index = adminAccounts.indexOf(account); return `<tr><td><b>${esc(account.name)}</b><small class="table-secondary">${esc(account.email || 'Akun demo')}</small></td><td>${esc(account.role)}</td><td>${esc(account.identity)}</td><td>${esc(account.detail)}</td><td><span class="status ${account.status === 'Aktif' ? 'status-selesai' : 'status-belum'}">${esc(account.status)}</span></td><td><button class="text-action" data-account-status="${index}">${account.status === 'Aktif' ? 'Nonaktifkan' : 'Aktifkan'}</button><button class="text-action" data-account-reset="${index}">Reset sandi</button></td></tr>` }).join('') }
-function parseCsv(text) { let rows = [], row = [], cell = '', quoted = false; for (let index = 0; index < text.length; index++) { let char = text[index]; if (char === '"' && quoted && text[index + 1] === '"') { cell += '"'; index++ } else if (char === '"') quoted = !quoted; else if (char === ',' && !quoted) { row.push(cell); cell = '' } else if ((char === '\n' || char === '\r') && !quoted) { if (char === '\r' && text[index + 1] === '\n') index++; row.push(cell); if (row.some(value => value.trim())) rows.push(row); row = []; cell = '' } else cell += char } if (cell || row.length) { row.push(cell); rows.push(row) } return rows }
+function accountStatusLabel(status) {
+    return { PENDING: 'Menunggu', AKTIF: 'Aktif', NONAKTIF: 'Nonaktif' }[status] || status;
+}
+function renderAccountRows(accounts) {
+    return accounts.map(account => {
+        const isAdmin = account.role === 'ADMIN';
+        const statusClass = account.status === 'AKTIF' ? 'status-selesai' : 'status-belum';
+        return `<tr><td><b>${esc(account.name)}</b><small class="table-secondary">${esc(account.email || '')}</small></td><td>${esc(account.role)}</td><td>${esc(account.identityNumber)}</td><td>${esc(account.detail)}</td><td><span class="status ${statusClass}">${esc(accountStatusLabel(account.status))}</span></td><td>${isAdmin ? '<span class="muted">Dilindungi</span>' : `<button class="text-action" data-account-status="${esc(account.id)}">${account.status === 'AKTIF' ? 'Nonaktifkan' : 'Aktifkan'}</button><button class="text-action" data-account-reset="${esc(account.id)}">Reset sandi</button><button class="text-action text-danger" data-account-delete="${esc(account.id)}" data-account-name="${esc(account.name)}">Hapus</button>`}</td></tr>`;
+    }).join('') || '<tr><td colspan="6">Tidak ada akun yang cocok.</td></tr>';
+}
+function bindAccountActions() {
+    $$('[data-account-status]').forEach(button => button.onclick = async () => {
+        const account = adminAccounts.find(item => item.id === button.dataset.accountStatus);
+        if (!account) return;
+        button.disabled = true;
+        try {
+            await api(`/api/admin/accounts/${encodeURIComponent(account.id)}/status`, { method: 'PATCH', body: JSON.stringify({ status: account.status === 'AKTIF' ? 'NONAKTIF' : 'AKTIF' }) });
+            toast('Status akun diperbarui.');
+            await renderAdminAccounts();
+        } catch (error) {
+            button.disabled = false;
+            toast(error.message);
+        }
+    });
+    $$('[data-account-reset]').forEach(button => button.onclick = async () => {
+        const account = adminAccounts.find(item => item.id === button.dataset.accountReset);
+        if (!account || !confirm(`Reset kata sandi akun ${account.name}?`)) return;
+        button.disabled = true;
+        try {
+            const result = await api(`/api/admin/accounts/${encodeURIComponent(account.id)}/password`, { method: 'PATCH', body: '{}' });
+            alert(`Kata sandi sementara untuk ${account.name}:\n\n${result.temporaryPassword}\n\nBerikan secara langsung dan minta pengguna segera menggantinya.`);
+            toast('Kata sandi sementara dibuat.');
+        } catch (error) {
+            button.disabled = false;
+            toast(error.message);
+        }
+    });
+    $$('[data-account-delete]').forEach(button => button.onclick = async () => {
+        const account = adminAccounts.find(item => item.id === button.dataset.accountDelete);
+        if (!account || !confirm(`Hapus akun ${account.name}? Data akademik dan berkas terkait juga akan dihapus.`)) return;
+        button.disabled = true;
+        try {
+            const result = await api(`/api/admin/accounts/${encodeURIComponent(account.id)}`, { method: 'DELETE' });
+            toast(result.message || 'Akun dihapus.');
+            await renderAdminAccounts();
+        } catch (error) {
+            button.disabled = false;
+            toast(error.message);
+        }
+    });
+}
 function renderCalendar() {
     let events = JSON.parse(localStorage.getItem('sh_calendar') || 'null') || [{ title: 'Ujian Tengah Semester', start: '2026-11-02', end: '2026-11-07', type: 'Ujian' }, { title: 'Hari Guru Nasional', start: '2026-11-25', end: '2026-11-25', type: 'Efektif' }]; $('#pageContent').innerHTML = heading('AGENDA SEKOLAH', 'Kalender sekolah', 'Hari efektif, libur, dan agenda akademik.') + `<section class="card"><div class="card-title"><h3>Tambah agenda</h3><small>TERLIHAT OLEH WARGA SEKOLAH</small></div><form id="calendarForm" class="calendar-form"><input id="eventTitle" class="field" required maxlength="120" placeholder="Nama agenda"><select id="eventType" class="field"><option>Libur</option><option>Efektif</option><option>Ujian</option></select><input id="eventStart" class="field" type="date" required><input id="eventEnd" class="field" type="date" required><button class="btn btn-primary">Simpan agenda</button></form></section><section class="card" style="margin-top:18px"><div class="card-title"><h3>Agenda mendatang</h3><small>${events.length} AGENDA</small></div><div class="table-wrap"><table><thead><tr><th>Agenda</th><th>Jenis</th><th>Mulai</th><th>Selesai</th><th></th></tr></thead><tbody>${events.sort((a, b) => a.start.localeCompare(b.start)).map((event, index) => `<tr><td><b>${esc(event.title)}</b></td><td>${esc(event.type)}</td><td>${prettyDate(event.start)}</td><td>${prettyDate(event.end)}</td><td><button class="text-action" data-event-delete="${index}">Hapus</button></td></tr>`).join('')}</tbody></table></div></section>`;
     $('#calendarForm').onsubmit = e => { e.preventDefault(); if ($('#eventEnd').value < $('#eventStart').value) return toast('Tanggal selesai harus setelah tanggal mulai.'); events.push({ title: $('#eventTitle').value.trim(), type: $('#eventType').value, start: $('#eventStart').value, end: $('#eventEnd').value }); localStorage.setItem('sh_calendar', JSON.stringify(events)); renderCalendar(); toast('Agenda sekolah ditambahkan.') }; $$('[data-event-delete]').forEach(btn => btn.onclick = () => { events.splice(Number(btn.dataset.eventDelete), 1); localStorage.setItem('sh_calendar', JSON.stringify(events)); renderCalendar() })
 }
 function renderAttendanceSettings() {
     $('#pageContent').innerHTML = heading('PENGATURAN SEKOLAH', 'Aturan kehadiran', 'Tetapkan jam absen dan titik acuan sekolah.') + `
+        <div class="settings-layout">
         <form id="attendanceSettingsForm" class="card settings-form">
             <div class="settings-grid">
                 <label>Koordinat lintang<input class="field" id="settingLatitude" type="number" min="-90" max="90" step="any" value="${esc(schoolSettings.latitude)}" required></label>
@@ -1525,7 +2091,9 @@ function renderAttendanceSettings() {
             </div>
             <p id="attendanceSettingsMessage" class="hint" role="status"></p>
             <button class="btn btn-primary" type="submit">Simpan pengaturan</button>
-        </form>`;
+        </form>
+        ${geofenceCardHtml()}
+        </div>`;
 
     const form = $('#attendanceSettingsForm');
     const submitButton = form.querySelector('button[type="submit"]');
@@ -1560,6 +2128,7 @@ function renderAttendanceSettings() {
             persistAdminData();
             message.textContent = 'Pengaturan lokasi dan jam absen tersimpan di server.';
             toast('Aturan kehadiran tersimpan di database.');
+            renderAttendanceSettings();
         } catch (error) {
             message.textContent = error.message;
             message.classList.add('error');

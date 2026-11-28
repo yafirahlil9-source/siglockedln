@@ -80,13 +80,82 @@ async function postAttendance(baseUrl, cookie, faceDescriptor, coordinates = {},
   return { response, data: await response.json() };
 }
 
-test('face biometric registration, server-side attendance enforcement, and deletion', { timeout: 30000 }, async () => {
+test('legacy plaintext biometric templates are encrypted during startup migration', { timeout: 30000 }, async () => {
+  const port = await findFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'edusmart-face-migration-'));
+  const databaseName = uniqueDatabaseName();
+  const adminEmail = `admin-${crypto.randomUUID()}@edusmart-test.example.com`;
+  const adminPassword = 'AdminPassword123';
+  const descriptor = Array.from({ length: 128 }, (_, index) => Math.sin(index));
+  const validId = crypto.randomUUID();
+  const corruptId = crypto.randomUUID();
+  let child;
+  try {
+    const connection = await mysql.createConnection(mysqlConfig);
+    try {
+      await connection.query(`CREATE DATABASE \`${databaseName}\``);
+      await connection.query(`USE \`${databaseName}\``);
+      await connection.query(`CREATE TABLE pengguna (
+        id VARCHAR(36) PRIMARY KEY, full_name VARCHAR(120) NOT NULL, email VARCHAR(120) NOT NULL UNIQUE,
+        password_hash VARCHAR(255), role ENUM('SISWA','GURU','STAF','ADMIN') NOT NULL,
+        identity_number VARCHAR(30) NOT NULL UNIQUE, detail TEXT NOT NULL, bio VARCHAR(300) NOT NULL DEFAULT '',
+        google_id VARCHAR(100) UNIQUE, status ENUM('PENDING','AKTIF','NONAKTIF') NOT NULL DEFAULT 'PENDING',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, face_descriptor MEDIUMTEXT DEFAULT NULL
+      ) ENGINE=InnoDB`);
+      await connection.execute('INSERT INTO pengguna (id,full_name,email,role,identity_number,detail,status,face_descriptor) VALUES (?,?,?,?,?,?,?,?)',
+        [validId, 'Wajah Lama', `legacy-face-${crypto.randomUUID()}@example.com`, 'SISWA', 'NIS-LEGACY-FACE', 'X RPL 1', 'AKTIF', JSON.stringify(descriptor)]);
+      await connection.execute('INSERT INTO pengguna (id,full_name,email,role,identity_number,detail,status,face_descriptor) VALUES (?,?,?,?,?,?,?,?)',
+        [corruptId, 'Wajah Rusak', `corrupt-face-${crypto.randomUUID()}@example.com`, 'SISWA', 'NIS-CORRUPT-FACE', 'X RPL 1', 'AKTIF', 'bukan deskriptor']);
+    } finally {
+      await connection.end();
+    }
+
+    child = spawn(process.execPath, [path.join(projectRoot, 'server.js')], {
+      cwd: projectRoot,
+      env: {
+        ...process.env, NODE_ENV: 'test', PORT: String(port), APP_URL: baseUrl, DATA_DIR: dataDir,
+        DB_NAME: databaseName, SESSION_SECRET: crypto.randomBytes(40).toString('hex'),
+        SEED_ADMIN_EMAIL: adminEmail, SEED_ADMIN_PASSWORD: adminPassword, BCRYPT_COST: '4',
+        AUTO_ACTIVATE_ACCOUNTS: 'true', GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: ''
+      },
+      stdio: 'ignore'
+    });
+    let ready = false;
+    for (let attempt = 0; attempt < 100 && !ready; attempt++) {
+      if (child.exitCode !== null) throw new Error(`Server exited with code ${child.exitCode}`);
+      try { ready = (await fetch(`${baseUrl}/api/health`)).ok; } catch {}
+      if (!ready) await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.ok(ready, 'Server should start before the smoke-test timeout');
+    const db = await mysql.createConnection({ ...mysqlConfig, database: databaseName });
+    try {
+      const [[validRow]] = await db.execute('SELECT face_descriptor FROM pengguna WHERE id=?', [validId]);
+      assert.match(validRow.face_descriptor, /^v1\./);
+      assert.notEqual(validRow.face_descriptor, JSON.stringify(descriptor));
+      const [[corruptRow]] = await db.execute('SELECT face_descriptor FROM pengguna WHERE id=?', [corruptId]);
+      assert.equal(corruptRow.face_descriptor, null);
+    } finally {
+      await db.end();
+    }
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      await new Promise(resolve => { child.once('exit', resolve); child.kill(); });
+    }
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    await dropDatabase(databaseName);
+  }
+});
+
+test('encrypted face enrollment, attendance prechecks, manual review, and deletion', { timeout: 30000 }, async () => {
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'edusmart-face-'));
   const databaseName = uniqueDatabaseName();
   const studentEmail = `student-${crypto.randomUUID()}@edusmart-test.example.com`;
   const studentPassword = 'Password123';
+  const adminEmail = `admin-${crypto.randomUUID()}@edusmart-test.example.com`;
+  const adminPassword = 'AdminPassword123';
 
   const child = spawn(process.execPath, [path.join(projectRoot, 'server.js')], {
     cwd: projectRoot,
@@ -98,6 +167,8 @@ test('face biometric registration, server-side attendance enforcement, and delet
       DATA_DIR: dataDir,
       DB_NAME: databaseName,
       SESSION_SECRET: crypto.randomBytes(40).toString('hex'),
+      SEED_ADMIN_EMAIL: adminEmail,
+      SEED_ADMIN_PASSWORD: adminPassword,
       BCRYPT_COST: '4',
       AUTO_ACTIVATE_ACCOUNTS: 'true',
       GOOGLE_CLIENT_ID: '',
@@ -160,11 +231,36 @@ test('face biometric registration, server-side attendance enforcement, and delet
     assert.equal(validSave.response.status, 200);
     assert.equal(validSave.data.ok, true);
 
+    const faceStatus = await api(baseUrl, '/api/profile/face', { cookie });
+    assert.equal(faceStatus.response.status, 200);
+    assert.equal(faceStatus.data.hasFace, true);
+    assert.equal(faceStatus.data.descriptor, undefined, 'Registered biometric templates must not be returned to the browser');
+
+    const intruderDescriptor = Array.from({ length: 128 }, (_, i) => Math.cos(i));
+    const matchingCheck = await api(baseUrl, '/api/profile/face/check', {
+        method: 'POST', cookie, body: { descriptor: ownerDescriptor }
+    });
+    assert.equal(matchingCheck.response.status, 200);
+    assert.equal(matchingCheck.data.matched, true);
+    const mismatchingCheck = await api(baseUrl, '/api/profile/face/check', {
+        method: 'POST', cookie, body: { descriptor: intruderDescriptor }
+    });
+    assert.equal(mismatchingCheck.response.status, 200);
+    assert.equal(mismatchingCheck.data.matched, false);
+
+    const db = await mysql.createConnection({ ...mysqlConfig, database: databaseName });
+    try {
+      const [[{ face_descriptor: storedDescriptor }]] = await db.execute('SELECT face_descriptor FROM pengguna WHERE id=(SELECT id FROM pengguna WHERE email=?)', [studentEmail]);
+      assert.match(storedDescriptor, /^v1\./);
+      assert.notEqual(storedDescriptor, JSON.stringify(ownerDescriptor));
+    } finally {
+      await db.end();
+    }
+
     // 5. Reject attendance without descriptor or with mismatched descriptor (titip absen)
     const missingDescAtt = await postAttendance(baseUrl, cookie);
     assert.equal(missingDescAtt.response.status, 403);
 
-    const intruderDescriptor = Array.from({ length: 128 }, (_, i) => Math.cos(i));
     const mismatchAtt = await postAttendance(baseUrl, cookie, intruderDescriptor);
     assert.equal(mismatchAtt.response.status, 403);
 
@@ -180,10 +276,27 @@ test('face biometric registration, server-side attendance enforcement, and delet
     const inaccurateAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor, {}, 101);
     assert.equal(inaccurateAtt.response.status, 422);
 
-    // 7. Accept attendance inside the school radius when descriptor matches owner
+    const accuracyBoundaryAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor, {}, 100);
+    assert.equal(accuracyBoundaryAtt.response.status, 201, JSON.stringify(accuracyBoundaryAtt.data));
+    assert.equal(accuracyBoundaryAtt.data.verification, 'MENUNGGU');
+
+    // 7. Attendance inside the school radius is recorded for admin review
     const matchAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor);
-    assert.equal(matchAtt.response.status, 201);
-    assert.equal(matchAtt.data.verification, 'DISETUJUI');
+    assert.equal(matchAtt.response.status, 200);
+    assert.equal(matchAtt.data.verification, 'MENUNGGU');
+
+    const adminLogin = await api(baseUrl, '/api/auth/login', {
+      method: 'POST',
+      body: { email: adminEmail, password: adminPassword }
+    });
+    assert.equal(adminLogin.response.status, 200);
+    const decision = await api(baseUrl, `/api/admin/attendance/${matchAtt.data.id}`, {
+      method: 'PATCH',
+      cookie: sessionCookie(adminLogin.response),
+      body: { verification: 'DISETUJUI' }
+    });
+    assert.equal(decision.response.status, 200);
+    assert.equal(decision.data.verification, 'DISETUJUI');
 
     // 8. Delete face descriptor and verify
     const deleteRes = await api(baseUrl, '/api/profile/face', {

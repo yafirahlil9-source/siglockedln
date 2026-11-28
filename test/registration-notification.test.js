@@ -131,6 +131,19 @@ test('new registration creates an admin notification that can be read', { timeou
     });
     assert.equal(result.response.status, 422);
 
+    result = await api(baseUrl, '/api/admin/attendance/settings', {
+      method: 'PUT', cookie: adminCookie, body: { ...updatedSettings, closeTime: '06:00' }
+    });
+    assert.equal(result.response.status, 422);
+    result = await api(baseUrl, '/api/admin/attendance/settings', {
+      method: 'PUT', cookie: adminCookie, body: { ...updatedSettings, lateAfter: '18:00' }
+    });
+    assert.equal(result.response.status, 422);
+    result = await api(baseUrl, '/api/admin/attendance/settings', {
+      method: 'PUT', cookie: adminCookie, body: { ...updatedSettings, openTime: '25:00' }
+    });
+    assert.equal(result.response.status, 422);
+
     result = await api(baseUrl, '/api/auth/register', {
       method: 'POST',
       body: {
@@ -169,7 +182,7 @@ test('new registration creates an admin notification that can be read', { timeou
   }
 });
 
-test('accounts auto-activate by default', { timeout: 30000 }, async () => {
+test('configured account auto-activation preserves academic metrics and profile features', { timeout: 30000 }, async () => {
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'edusmart-auto-activate-'));
@@ -190,6 +203,7 @@ test('accounts auto-activate by default', { timeout: 30000 }, async () => {
       SEED_ADMIN_EMAIL: adminEmail,
       SEED_ADMIN_PASSWORD: adminPassword,
       BCRYPT_COST: '4',
+      AUTO_ACTIVATE_ACCOUNTS: 'true',
       GOOGLE_CLIENT_ID: '',
       GOOGLE_CLIENT_SECRET: ''
     },
@@ -290,6 +304,165 @@ test('accounts auto-activate by default', { timeout: 30000 }, async () => {
     const search = await api(baseUrl, '/api/search?q=Pendaftar%20Otomatis', { cookie: studentCookie });
     assert.equal(search.response.status, 200);
     assert.ok(search.data.people.some(person => person.email === undefined && person.name === 'Pendaftar Otomatis'));
+  } finally {
+    child.kill();
+    if (child.exitCode === null) await new Promise(resolve => child.once('exit', resolve));
+    try {
+      await dropDatabase(databaseName);
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('manual activation, session invalidation, origin checks, and account cleanup', { timeout: 30000 }, async () => {
+  const port = await findFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'edusmart-account-security-'));
+  const databaseName = uniqueDatabaseName();
+  const adminEmail = `admin-${crypto.randomUUID()}@example.com`;
+  const adminPassword = `Admin-${crypto.randomBytes(18).toString('hex')}-7A`;
+  const studentEmail = `student-${crypto.randomUUID()}@example.com`;
+  const studentPassword = 'Sekolah123';
+  const child = spawn(process.execPath, [path.join(projectRoot, 'server.js')], {
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      PORT: String(port),
+      APP_URL: baseUrl,
+      DATA_DIR: dataDir,
+      DB_NAME: databaseName,
+      SESSION_SECRET: crypto.randomBytes(40).toString('hex'),
+      SEED_ADMIN_EMAIL: adminEmail,
+      SEED_ADMIN_PASSWORD: adminPassword,
+      BCRYPT_COST: '4',
+      AUTO_ACTIVATE_ACCOUNTS: '',
+      GOOGLE_CLIENT_ID: '',
+      GOOGLE_CLIENT_SECRET: ''
+    },
+    stdio: 'ignore'
+  });
+
+  try {
+    let ready = false;
+    for (let attempt = 0; attempt < 100 && !ready; attempt++) {
+      if (child.exitCode !== null) throw new Error(`Server exited with code ${child.exitCode}`);
+      try { ready = (await fetch(`${baseUrl}/api/health`)).ok; } catch {}
+      if (!ready) await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.ok(ready, 'Server should start before the smoke-test timeout');
+
+    const adminLogin = await api(baseUrl, '/api/auth/login', {
+      method: 'POST', body: { email: adminEmail, password: adminPassword }
+    });
+    assert.equal(adminLogin.response.status, 200);
+    const adminCookie = sessionCookie(adminLogin.response);
+
+    const registration = await api(baseUrl, '/api/auth/register', {
+      method: 'POST',
+      body: {
+        name: 'Siswa Manual', email: studentEmail, password: studentPassword,
+        role: 'SISWA', identityNumber: `NIS-${crypto.randomUUID().slice(0, 12)}`, detail: 'X RPL 1'
+      }
+    });
+    assert.equal(registration.response.status, 201);
+    assert.equal(registration.data.autoActivated, false);
+    const pendingLogin = await api(baseUrl, '/api/auth/login', {
+      method: 'POST', body: { email: studentEmail, password: studentPassword }
+    });
+    assert.equal(pendingLogin.response.status, 403);
+
+    let accounts = await api(baseUrl, '/api/admin/accounts', { cookie: adminCookie });
+    const account = accounts.data.accounts.find(item => item.email === studentEmail);
+    assert.equal(account.status, 'PENDING');
+
+    const crossOrigin = await fetch(`${baseUrl}/api/admin/accounts/${account.id}/status`, {
+      method: 'PATCH',
+      headers: { Origin: 'https://attacker.example', Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'AKTIF' })
+    });
+    assert.equal(crossOrigin.status, 403);
+    const invalidStatus = await api(baseUrl, `/api/admin/accounts/${account.id}/status`, {
+      method: 'PATCH', cookie: adminCookie, body: { status: 'DIHAPUS' }
+    });
+    assert.equal(invalidStatus.response.status, 422);
+
+    const activation = await api(baseUrl, `/api/admin/accounts/${account.id}/status`, {
+      method: 'PATCH', cookie: adminCookie, body: { status: 'AKTIF' }
+    });
+    assert.equal(activation.response.status, 200);
+    const firstLogin = await api(baseUrl, '/api/auth/login', {
+      method: 'POST', body: { email: studentEmail, password: studentPassword }
+    });
+    const firstCookie = sessionCookie(firstLogin.response);
+    const secondLogin = await api(baseUrl, '/api/auth/login', {
+      method: 'POST', body: { email: studentEmail, password: studentPassword }
+    });
+    const studentCookie = sessionCookie(secondLogin.response);
+    const oldSession = await api(baseUrl, '/api/profile/me', { cookie: firstCookie });
+    assert.equal(oldSession.response.status, 401, 'A new login must invalidate the previous session');
+
+    const forbiddenAdminList = await api(baseUrl, '/api/admin/accounts', { cookie: studentCookie });
+    assert.equal(forbiddenAdminList.response.status, 403);
+    const malformedJson = await fetch(`${baseUrl}/api/profile/me`, {
+      method: 'PUT',
+      headers: { Origin: baseUrl, Cookie: studentCookie, 'Content-Type': 'application/json' },
+      body: '{'
+    });
+    assert.equal(malformedJson.status, 400);
+
+    const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+    const avatarForm = new FormData();
+    avatarForm.append('image', new Blob([tinyPng], { type: 'image/png' }), 'avatar.png');
+    const avatarUpload = await fetch(`${baseUrl}/api/profile/media/avatar`, {
+      method: 'POST', headers: { Origin: baseUrl, Cookie: studentCookie }, body: avatarForm
+    });
+    assert.equal(avatarUpload.status, 200);
+    assert.equal(fs.readdirSync(path.join(dataDir, 'profile-media')).length, 1);
+
+    const reset = await api(baseUrl, `/api/admin/accounts/${account.id}/password`, {
+      method: 'PATCH', cookie: adminCookie, body: {}
+    });
+    assert.equal(reset.response.status, 200);
+    assert.ok(reset.data.temporaryPassword);
+    const resetSession = await api(baseUrl, '/api/profile/me', { cookie: studentCookie });
+    assert.equal(resetSession.response.status, 401, 'Password reset must invalidate existing sessions');
+    const oldPasswordLogin = await api(baseUrl, '/api/auth/login', {
+      method: 'POST', body: { email: studentEmail, password: studentPassword }
+    });
+    assert.equal(oldPasswordLogin.response.status, 401);
+    const temporaryLogin = await api(baseUrl, '/api/auth/login', {
+      method: 'POST', body: { email: studentEmail, password: reset.data.temporaryPassword }
+    });
+    assert.equal(temporaryLogin.response.status, 200);
+    const temporaryCookie = sessionCookie(temporaryLogin.response);
+
+    const deactivation = await api(baseUrl, `/api/admin/accounts/${account.id}/status`, {
+      method: 'PATCH', cookie: adminCookie, body: { status: 'NONAKTIF' }
+    });
+    assert.equal(deactivation.response.status, 200);
+    const deactivatedSession = await api(baseUrl, '/api/profile/me', { cookie: temporaryCookie });
+    assert.equal(deactivatedSession.response.status, 401, 'Deactivation must invalidate existing sessions');
+    const deactivatedLogin = await api(baseUrl, '/api/auth/login', {
+      method: 'POST', body: { email: studentEmail, password: reset.data.temporaryPassword }
+    });
+    assert.equal(deactivatedLogin.response.status, 403);
+
+    await api(baseUrl, `/api/admin/accounts/${account.id}/status`, {
+      method: 'PATCH', cookie: adminCookie, body: { status: 'AKTIF' }
+    });
+    const selfDelete = await api(baseUrl, `/api/admin/accounts/${adminLogin.data.user.id}`, {
+      method: 'DELETE', cookie: adminCookie
+    });
+    assert.equal(selfDelete.response.status, 400);
+    const deletion = await api(baseUrl, `/api/admin/accounts/${account.id}`, {
+      method: 'DELETE', cookie: adminCookie
+    });
+    assert.equal(deletion.response.status, 200);
+    accounts = await api(baseUrl, '/api/admin/accounts', { cookie: adminCookie });
+    assert.equal(accounts.data.accounts.some(item => item.id === account.id), false);
+    assert.equal(fs.readdirSync(path.join(dataDir, 'profile-media')).length, 0);
   } finally {
     child.kill();
     if (child.exitCode === null) await new Promise(resolve => child.once('exit', resolve));
