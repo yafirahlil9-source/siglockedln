@@ -29,7 +29,7 @@ let bioText = '', showAverage = true, showRank = true, cameraStream = null, curr
 let notifications = [], adminAccounts = [];
 let optimisticReadNotifIds = new Set(), markAllReadPending = false;
 let availableSubjects = [], teacherSubjects = [], teacherClasses = [], teacherMaterials = [], allMaterials = [];
-let schoolSettings = { latitude: '-7.164041847763249', longitude: '112.64734569558635', radius: 100, open: '06:30', late: '07:15', cutoff: '23:59', alpha: 3 };
+let schoolSettings = { latitude: '-7.163754437737142', longitude: '112.64748517486774', locationLocked: true, radius: 100, open: '06:30', late: '07:15', cutoff: '23:59', alpha: 3 };
 let identityRequests = [];
 function svgIcon(name, size = 18) {
     const paths = {
@@ -48,7 +48,7 @@ function svgIcon(name, size = 18) {
 }
 window.svgIcon = svgIcon;
 const userNav = [['beranda', svgIcon('home', 18), 'Beranda'], ['cari', svgIcon('search', 18), 'Cari'], ['absen', svgIcon('scanFace', 18), 'Absen'], ['pembelajaran', svgIcon('tasks', 18), 'Materi & Tugas'], ['profil', svgIcon('user', 18), 'Profil']];
-const adminNav = [['beranda', svgIcon('home', 18), 'Beranda'], ['cari', svgIcon('search', 18), 'Cari'], ['kehadiran', svgIcon('scanFace', 18), 'Kehadiran'], ['akademik', svgIcon('classes', 18), 'Mata pelajaran'], ['pembelajaran', svgIcon('tasks', 18), 'Materi & Tugas'], ['kelas', svgIcon('classes', 18), 'Kelas'], ['laporan', svgIcon('reports', 18), 'Laporan'], ['profil', svgIcon('user', 18), 'Profil']];
+const adminNav = [['beranda', svgIcon('home', 18), 'Beranda'], ['cari', svgIcon('search', 18), 'Cari'], ['kehadiran', svgIcon('scanFace', 18), 'Kehadiran'], ['akademik', svgIcon('classes', 18), 'Mata pelajaran'], ['kelas', svgIcon('classes', 18), 'Kelas'], ['laporan', svgIcon('reports', 18), 'Laporan'], ['profil', svgIcon('user', 18), 'Profil']];
 function persist() { localStorage.setItem('sh_topics', JSON.stringify(topics)); localStorage.setItem('sh_tasks', JSON.stringify(tasks)) }
 function toast(msg) { let el = $('#toast'); el.textContent = msg; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2500) }
 function esc(s = '') { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) }
@@ -467,6 +467,9 @@ function goPage(page, options = {}) {
         options = { ...options, section: page };
         page = 'pembelajaran';
     }
+    if (page === 'pembelajaran' && currentUser.role === 'admin') {
+        page = 'akademik';
+    }
     let adminOnly = ['kehadiran', 'laporan', 'akun', 'kalender', 'aturan', 'pengingat', 'identitas', 'kelas', 'akademik'];
     if (adminOnly.includes(page) && currentUser.role !== 'admin') {
         page = 'beranda';
@@ -815,22 +818,28 @@ addTaskForm = function () {
     const selectedSubjectId = () => Number($('#newSubject').value);
     const selectedSubjectName = () => subjects.find(subject => subject.id === selectedSubjectId())?.name || 'mata pelajaran ini';
     const updateTaskMaterials = () => {
-        const materials = teacherMaterials.filter(material => material.subjectId === selectedSubjectId());
+        const selectedClass = ($('#newClass')?.value || '').trim().toLowerCase();
+        const materials = teacherMaterials.filter(material => {
+            if (material.subjectId !== selectedSubjectId()) return false;
+            const matClass = (material.className || 'Semua kelas').trim().toLowerCase();
+            return !selectedClass || matClass === 'semua' || matClass === 'semua kelas' || matClass === selectedClass;
+        });
         const select = $('#newMaterial');
         const help = $('#taskMaterialHelp');
         select.innerHTML = materials.length > 1
-            ? '<option value="">Pilih materi...</option>' + materials.map(material => `<option value="${esc(material.id)}">${esc(material.title)}</option>`).join('')
-            : materials.map(material => `<option value="${esc(material.id)}">${esc(material.title)}</option>`).join('');
+            ? '<option value="">Pilih materi...</option>' + materials.map(material => `<option value="${esc(material.id)}">${esc(material.title)} (${esc(material.className || 'Semua kelas')})</option>`).join('')
+            : materials.map(material => `<option value="${esc(material.id)}">${esc(material.title)} (${esc(material.className || 'Semua kelas')})</option>`).join('');
         select.disabled = materials.length <= 1;
         select.required = materials.length > 1;
         $('#saveTaskBtn').disabled = materials.length === 0;
         if (!materials.length) {
-            help.innerHTML = `<div class="form-notice">Belum ada materi untuk ${esc(selectedSubjectName())}. Buat materi terlebih dahulu sebelum membuat tugas. <button class="text-action" type="button" id="createTaskMaterial">Buat materi</button></div>`;
+            help.innerHTML = `<div class="form-notice">Belum ada materi untuk ${esc(selectedSubjectName())} pada kelas ini. Buat materi terlebih dahulu sebelum membuat tugas. <button class="text-action" type="button" id="createTaskMaterial">Buat materi</button></div>`;
             $('#createTaskMaterial').onclick = () => {
                 if (currentPage === 'pembelajaran') {
                     renderMaterials(selectedSubjectId()).then(() => {
                         const card = $('#materialCreateCard');
                         card?.classList.remove('hidden');
+                        if ($('#materialClass') && $('#newClass')?.value) $('#materialClass').value = $('#newClass').value;
                         (card || $('#learningMaterialsSection'))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                         setTimeout(() => $('#materialTitle')?.focus({ preventScroll: true }), 200);
                     });
@@ -840,11 +849,12 @@ addTaskForm = function () {
             };
         } else {
             help.innerHTML = materials.length === 1
-                ? '<p class="hint">Materi terisi otomatis karena hanya tersedia satu materi.</p>'
+                ? '<p class="hint">Materi terisi otomatis karena hanya tersedia satu materi yang sesuai.</p>'
                 : '<p class="hint">Pilih salah satu materi yang menjadi dasar tugas.</p>';
         }
     };
     $('#newSubject').onchange = updateTaskMaterials;
+    $('#newClass').onchange = updateTaskMaterials;
     updateTaskMaterials();
     if (panel) {
         panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -906,7 +916,7 @@ function bindAttendancePhotoFallbacks(container = document) {
 
 renderAttendance = function () {
     if (currentUser.role !== 'admin') return renderUserAttendance();
-    $('#pageContent').innerHTML = heading('PENGELOLAAN SEKOLAH', 'Foto Kehadiran Siswa', 'Periksa foto, lokasi, dan catatan siswa sebelum menyetujui kehadiran.') +
+    $('#pageContent').innerHTML = heading('PENGELOLAAN SEKOLAH', 'Foto Kehadiran Siswa', 'Periksa foto, lokasi, dan daftar siswa yang tidak masuk hari ini.') +
     `<section class="card">
         <div class="card-title">
             <h3>Daftar Kehadiran Siswa (Verifikasi Admin)</h3>
@@ -929,12 +939,35 @@ renderAttendance = function () {
                 </tbody>
             </table>
         </div>
+    </section>
+    <section class="card" style="margin-top:18px">
+        <div class="card-title">
+            <h3>Daftar Siswa Tidak Masuk Hari Ini</h3>
+            <span class="status status-terlambat" id="absentTodayCount">Memuat...</span>
+        </div>
+        <p class="muted" style="margin-bottom:12px">Siswa yang absennya ditolak sistem (di luar jangkauan sekolah), ditolak admin, atau belum melakukan absensi hari ini.</p>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Nama Siswa</th>
+                        <th>Kelas</th>
+                        <th>Keterangan</th>
+                        <th>Waktu Catatan</th>
+                    </tr>
+                </thead>
+                <tbody id="absentTodayRows">
+                    <tr><td colspan="4" style="text-align:center">Memuat daftar tidak masuk...</td></tr>
+                </tbody>
+            </table>
+        </div>
     </section>`;
 
     let load = async () => {
         try {
             let result = await api('/api/admin/attendance');
             let rows = result.attendance || [];
+            let absentRows = result.absentToday || [];
             $('#adminAttendanceRows').innerHTML = rows.map(row => `
                 <tr>
                     <td>
@@ -946,7 +979,7 @@ renderAttendance = function () {
                     <td><b>${esc(row.name)}</b><br><small class="muted">${esc(row.email || '')}</small></td>
                     <td><span class="role-tag">${esc(row.detail || '-')}</span></td>
                     <td>${new Date(row.capturedAt).toLocaleString('id-ID')}<br><small class="muted">${esc(row.day)}</small></td>
-                    <td><span class="status ${row.verification === 'DISETUJUI' ? 'status-selesai' : (row.verification === 'DITOLAK' ? 'status-terlambat' : 'status-belum')}">${row.verification === 'DISETUJUI' ? '✓ Disetujui Admin' : row.verification === 'DITOLAK' ? (row.rejectionReason === 'LOKASI' ? 'Ditolak · Tidak hadir' : 'Ditolak') : esc(row.verification)}</span></td>
+                    <td><span class="status ${row.verification === 'DISETUJUI' ? 'status-selesai' : (row.verification === 'DITOLAK' ? 'status-terlambat' : 'status-belum')}">${row.verification === 'DISETUJUI' ? '✓ Disetujui Admin' : row.verification === 'DITOLAK' ? (row.rejectionReason === 'LOKASI' ? 'Ditolak · Tidak masuk' : 'Ditolak') : esc(row.verification)}</span></td>
                     <td>
                         <div style="display:flex;gap:6px">
                             ${row.verification === 'DISETUJUI' ? `
@@ -961,6 +994,16 @@ renderAttendance = function () {
                 </tr>
             `).join('') || '<tr><td colspan="6" class="empty-state">Belum ada pengajuan absensi hari ini.</td></tr>';
             bindAttendancePhotoFallbacks($('#adminAttendanceRows'));
+
+            $('#absentTodayCount').textContent = `${absentRows.length} TIDAK MASUK`;
+            $('#absentTodayRows').innerHTML = absentRows.map(item => `
+                <tr>
+                    <td><b>${esc(item.name)}</b><br><small class="muted">${esc(item.email || '')}</small></td>
+                    <td><span class="role-tag">${esc(item.detail || '-')}</span></td>
+                    <td><span class="status ${item.reason === 'BELUM_ABSEN' ? 'status-belum' : 'status-terlambat'}">${esc(item.statusLabel)}</span></td>
+                    <td>${item.capturedAt ? new Date(item.capturedAt).toLocaleTimeString('id-ID') : '-'}</td>
+                </tr>
+            `).join('') || '<tr><td colspan="4" class="empty-state">Semua siswa aktif sudah hadir atau menunggu verifikasi hari ini.</td></tr>';
 
             $$('[data-review-att]').forEach(button => button.onclick = async () => {
                 try {
@@ -986,6 +1029,7 @@ renderAttendance = function () {
             });
         } catch (error) {
             $('#adminAttendanceRows').innerHTML = `<tr><td colspan="6" class="error">${esc(error.message)}</td></tr>`;
+            if ($('#absentTodayRows')) $('#absentTodayRows').innerHTML = `<tr><td colspan="4" class="error">${esc(error.message)}</td></tr>`;
         }
     };
 
@@ -1139,14 +1183,13 @@ function renderLearning(options = {}) {
 }
 
 async function renderMaterials(preferredSubjectId = '') {
+    if (currentUser.role === 'admin') return renderAcademicAdmin();
     const canCreate = currentUser.role === 'guru';
-    const canAddSubject = currentUser.role === 'admin';
-    const isAdmin = canAddSubject;
     const filterId = preferredSubjectId === '' ? 'Semua' : Number(preferredSubjectId);
     const embedded = currentPage === 'pembelajaran';
     const target = embedded ? $('#learningMaterialsSection') : $('#pageContent');
     if (!target) return;
-    const action = (canCreate || canAddSubject) ? `<button class="btn btn-primary" id="openMaterialCreate">+ ${canAddSubject ? 'Tambah mapel' : 'Tambah materi'}</button>` : '';
+    const action = canCreate ? `<button class="btn btn-primary" id="openMaterialCreate">+ Tambah materi</button>` : '';
     const pageHeading = heading('PUSAT PEMBELAJARAN', 'Materi pembelajaran', 'Baca materi, buka tautan, dan unduh berkas yang dibagikan guru.', action);
     const panelHeading = `<div class="card-title learning-section-heading"><h3>Materi pembelajaran</h3>${action}</div>`;
     target.innerHTML = (embedded ? '' : pageHeading) + '<div class="empty-state">Memuat materi...</div>';
@@ -1161,24 +1204,24 @@ async function renderMaterials(preferredSubjectId = '') {
     if (!target.isConnected || (embedded && currentPage !== 'pembelajaran')) return;
     allMaterials = data.materials || [];
     if (currentUser.role === 'guru') teacherMaterials = allMaterials;
-    const subjects = isAdmin ? availableSubjects : teacherSubjects;
-    const preselectNewSubject = isAdmin && subjects.length === 0;
+    const subjects = teacherSubjects;
+    const classOptions = teacherClasses.length ? teacherClasses : (window.availableClasses || []).filter(name => !/^semua/i.test(name)).map(name => ({ name }));
     const filtered = filterId === 'Semua' ? allMaterials : allMaterials.filter(material => material.subjectId === filterId);
-    const createForm = canCreate && (subjects.length || isAdmin) ? `
+    const createForm = canCreate && subjects.length ? `
         <section class="card material-create-card" id="materialCreateCard">
             <div class="card-title"><h3>Tambah materi baru</h3><button class="text-action" id="closeMaterialCreate">Batal</button></div>
             <form id="materialCreateForm" class="grid two-col">
                 <div>
                     <label class="field-label" for="materialSubject">Mata pelajaran</label>
-                    <select id="materialSubject" class="field" required ${subjects.length === 1 && !isAdmin ? 'disabled' : ''}>
+                    <select id="materialSubject" class="field" required ${subjects.length === 1 ? 'disabled' : ''}>
                         ${subjects.map(subject => `<option value="${subject.id}" ${Number(subject.id) === filterId ? 'selected' : ''}>${esc(subject.name)}</option>`).join('')}
-                        ${isAdmin ? `<option value="__new__" ${preselectNewSubject ? 'selected' : ''}>＋ Tambah mata pelajaran</option>` : ''}
                     </select>
-                    ${isAdmin ? `<div id="newMaterialSubjectGroup" class="${preselectNewSubject ? '' : 'hidden'}">
-                        <label class="field-label" for="newMaterialSubjectName">Nama mata pelajaran baru</label>
-                        <input id="newMaterialSubjectName" class="field" maxlength="80" placeholder="Contoh: Pemrograman Dasar" ${preselectNewSubject ? 'required' : ''}>
-                    </div>` : ''}
-                    ${subjects.length === 1 && !isAdmin ? '<p class="hint">Mata pelajaran terisi otomatis sesuai pilihan saat mendaftar.</p>' : isAdmin ? '<p class="hint">Mapel baru dapat dipilih guru saat mendaftar.</p>' : ''}
+                    ${subjects.length === 1 ? '<p class="hint">Mata pelajaran terisi otomatis sesuai pilihan saat mendaftar.</p>' : ''}
+                    <label class="field-label" for="materialClass">Kelas tujuan</label>
+                    <select id="materialClass" class="field" required>
+                        <option value="Semua kelas">Semua kelas</option>
+                        ${classOptions.map(cls => `<option value="${esc(cls.name)}">${esc(cls.name)}</option>`).join('')}
+                    </select>
                     <label class="field-label" for="materialTitle">Judul materi</label>
                     <input id="materialTitle" class="field" required maxlength="150" placeholder="Judul materi...">
                     <label class="field-label" for="materialUrl">Tautan materi (Opsional)</label>
@@ -1192,15 +1235,6 @@ async function renderMaterials(preferredSubjectId = '') {
                 </div>
                 <div style="grid-column:1/-1"><button class="btn btn-primary" type="submit" id="saveMaterialBtn">Simpan materi</button></div>
             </form>
-        </section>` : canAddSubject ? `
-        <section class="card material-create-card" id="materialCreateCard">
-            <div class="card-title"><h3>Tambah mata pelajaran</h3><button class="text-action" id="closeMaterialCreate">Batal</button></div>
-            <form id="adminSubjectCreateForm">
-                <label class="field-label" for="newMaterialSubjectName">Nama mata pelajaran baru</label>
-                <input id="newMaterialSubjectName" class="field" maxlength="80" placeholder="Contoh: Pemrograman Dasar" required>
-                <p class="hint">Mata pelajaran baru akan muncul saat guru mendaftar.</p>
-                <button class="btn btn-primary" type="submit" id="saveSubjectBtn">Simpan mata pelajaran</button>
-            </form>
         </section>` : '';
     target.innerHTML = (embedded ? panelHeading : pageHeading) + createForm + `
         <div class="filter-row material-filter-row">
@@ -1210,10 +1244,10 @@ async function renderMaterials(preferredSubjectId = '') {
         <div class="card-title"><h3>Daftar materi</h3><small>${filtered.length} MATERI</small></div>
         <div class="grid two-col material-grid">
             ${filtered.map(material => `<article class="card material-card">
-                <div class="task-top"><span class="task-kind">${esc(material.subject)}</span>${material.hasFile ? '<span class="status status-selesai">Ada berkas</span>' : ''}</div>
+                <div class="task-top"><span class="task-kind">${esc(material.subject)}</span><span class="status status-belum">🎯 ${esc(material.className || 'Semua kelas')}</span>${material.hasFile ? '<span class="status status-selesai">Ada berkas</span>' : ''}</div>
                 <h3>${esc(material.title)}</h3>
                 <div class="material-content">${esc(material.content)}</div>
-                <div class="material-meta"><span>Guru: <b>${esc(material.teacherName)}</b></span><span>${new Date(material.createdAt).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}</span></div>
+                <div class="material-meta"><span>Guru: <b>${esc(material.teacherName)}</b></span><span>Kelas: <b>${esc(material.className || 'Semua kelas')}</b></span><span>${new Date(material.createdAt).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}</span></div>
                 <div class="material-actions">
                     ${material.url ? `<a class="btn btn-outline" href="${esc(material.url)}" target="_blank" rel="noopener noreferrer">Buka tautan</a>` : ''}
                     ${material.hasFile ? `<a class="btn btn-outline" href="/api/materials/${encodeURIComponent(material.id)}/file" target="_blank" rel="noopener noreferrer">Unduh ${esc(material.fileOriginalName || 'berkas')}</a>` : ''}
@@ -1226,30 +1260,15 @@ async function renderMaterials(preferredSubjectId = '') {
         if (!createCard) return toast('Belum ada mata pelajaran yang dapat dipilih.');
         createCard.classList.toggle('hidden');
         createCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        if (!createCard.classList.contains('hidden')) setTimeout(() => $(canAddSubject ? '#newMaterialSubjectName' : '#materialTitle')?.focus(), 200);
+        if (!createCard.classList.contains('hidden')) setTimeout(() => $('#materialTitle')?.focus(), 200);
     };
     if ($('#closeMaterialCreate')) $('#closeMaterialCreate').onclick = () => createCard?.classList.add('hidden');
-    if ($('#adminSubjectCreateForm')) $('#adminSubjectCreateForm').onsubmit = async event => {
-        event.preventDefault();
-        const button = $('#saveSubjectBtn');
-        button.disabled = true;
-        button.textContent = 'Menyimpan...';
-        try {
-            const subject = await api('/api/admin/subjects', { method: 'POST', body: JSON.stringify({ name: $('#newMaterialSubjectName').value.trim() }) });
-            if (!availableSubjects.some(item => Number(item.id) === Number(subject.id))) availableSubjects.push(subject);
-            toast('Mata pelajaran berhasil ditambahkan.');
-            await renderMaterials();
-        } catch (error) {
-            button.disabled = false;
-            button.textContent = 'Simpan mata pelajaran';
-            toast(error.message);
-        }
-    };
     if ($('#materialCreateForm')) $('#materialCreateForm').onsubmit = async event => {
         event.preventDefault();
         const subjectId = $('#materialSubject').value;
         const formData = new FormData();
         formData.append('subjectId', subjectId);
+        formData.append('className', ($('#materialClass')?.value || 'Semua kelas').trim());
         formData.append('title', $('#materialTitle').value.trim());
         formData.append('content', $('#materialContent').value.trim());
         formData.append('url', $('#materialUrl').value.trim());
@@ -1333,7 +1352,7 @@ function renderHome() {
             <div class="card">
                 <div class="card-title"><h3>Agenda & pengingat</h3><small>SEKITAR KAMU</small></div>
                 <div class="mini-list">
-                    <div class="mini-item" data-page="tugas" style="cursor:pointer" title="Buka halaman Tugas"><div class="mini-icon">▦</div><div><b>Tenggat tugas terdekat</b><small>${tasks.filter(t => t.status !== 'Selesai').length} tugas menunggu diselesaikan</small></div></div>
+                    <div class="mini-item" data-page="${currentUser.role === 'admin' ? 'kehadiran' : 'tugas'}" style="cursor:pointer" title="${currentUser.role === 'admin' ? 'Buka verifikasi kehadiran' : 'Buka halaman Tugas'}"><div class="mini-icon">▦</div><div><b>${currentUser.role === 'admin' ? 'Pantau kehadiran hari ini' : 'Tenggat tugas terdekat'}</b><small>${currentUser.role === 'admin' ? 'Periksa siswa hadir & tidak masuk' : `${tasks.filter(t => t.status !== 'Selesai').length} tugas menunggu diselesaikan`}</small></div></div>
                     <div class="mini-item" data-page="notifikasi" style="cursor:pointer" title="Buka pembaruan & notifikasi"><div class="mini-icon">◷</div><div><b>Periksa jadwal sekolah</b><small>Pantau informasi terbaru dari guru</small></div></div>
                     <div class="mini-item" id="reportComfortBtn" style="cursor:pointer" title="Buat topik atau laporan"><div class="mini-icon">✳</div><div><b>Jaga ruang tetap nyaman</b><small>Laporkan ancaman atau perundungan</small></div></div>
                 </div>
@@ -1346,7 +1365,7 @@ function renderHome() {
                 <div class="card-title"><h3>Menu cepat</h3></div>
                 <div class="mini-list">
                     <div class="mini-item" data-page="cari" style="cursor:pointer" title="Buka halaman Cari"><div class="mini-icon">⌕</div><div><b>Cari warga sekolah</b><small>Temukan profil siswa dan guru</small></div></div>
-                    <div class="mini-item" data-page="tugas" style="cursor:pointer" title="Buka halaman Tugas"><div class="mini-icon">▤</div><div><b>Lihat tugas</b><small>Cek status dan tenggat</small></div></div>
+                    <div class="mini-item" data-page="${currentUser.role === 'admin' ? 'akademik' : 'tugas'}" style="cursor:pointer" title="${currentUser.role === 'admin' ? 'Kelola mata pelajaran' : 'Buka halaman Tugas'}"><div class="mini-icon">▤</div><div><b>${currentUser.role === 'admin' ? 'Kelola mata pelajaran' : 'Lihat tugas'}</b><small>${currentUser.role === 'admin' ? 'Tambah dan atur mata pelajaran' : 'Cek status dan tenggat'}</small></div></div>
                 </div>
             </div>
         </aside>
@@ -2052,11 +2071,11 @@ function renderCalendar() {
     $('#calendarForm').onsubmit = e => { e.preventDefault(); if ($('#eventEnd').value < $('#eventStart').value) return toast('Tanggal selesai harus setelah tanggal mulai.'); events.push({ title: $('#eventTitle').value.trim(), type: $('#eventType').value, start: $('#eventStart').value, end: $('#eventEnd').value }); localStorage.setItem('sh_calendar', JSON.stringify(events)); renderCalendar(); toast('Agenda sekolah ditambahkan.') }; $$('[data-event-delete]').forEach(btn => btn.onclick = () => { events.splice(Number(btn.dataset.eventDelete), 1); localStorage.setItem('sh_calendar', JSON.stringify(events)); renderCalendar() })
 }
 function renderAttendanceSettings() {
-    $('#pageContent').innerHTML = heading('PENGATURAN SEKOLAH', 'Aturan kehadiran', 'Tetapkan jam absen dan titik acuan sekolah.') + `
+    $('#pageContent').innerHTML = heading('PENGATURAN SEKOLAH', 'Aturan kehadiran', 'Koordinat lokasi sekolah dikunci permanen oleh sistem; atur radius dan jam absen di sini.') + `
         <form id="attendanceSettingsForm" class="card settings-form">
             <div class="settings-grid">
-                <label>Koordinat lintang<input class="field" id="settingLatitude" type="number" min="-90" max="90" step="any" value="${esc(schoolSettings.latitude)}" required></label>
-                <label>Koordinat bujur<input class="field" id="settingLongitude" type="number" min="-180" max="180" step="any" value="${esc(schoolSettings.longitude)}" required></label>
+                <label>Koordinat lintang (Terkunci 🔒)<input class="field" id="settingLatitude" type="text" value="${esc(schoolSettings.latitude)}" readonly disabled></label>
+                <label>Koordinat bujur (Terkunci 🔒)<input class="field" id="settingLongitude" type="text" value="${esc(schoolSettings.longitude)}" readonly disabled></label>
                 <label>Radius absen (meter)<input class="field" id="settingRadius" type="number" min="30" max="500" value="${schoolSettings.radius}" required></label>
                 <label>Jam mulai<input class="field" id="settingOpen" type="time" value="${schoolSettings.open}" required></label>
                 <label>Batas terlambat<input class="field" id="settingLate" type="time" value="${schoolSettings.late}" required></label>
@@ -2064,8 +2083,8 @@ function renderAttendanceSettings() {
                 <label>Batas alpha per bulan<input class="field" id="settingAlpha" type="number" min="1" max="31" value="${schoolSettings.alpha}" required></label>
             </div>
             <div class="side-note">
-                <h4>Lokasi sekolah</h4>
-                <p>Koordinat, radius, dan jam absen disimpan di database server. Batas alpha tetap tersimpan di browser admin.</p>
+                <h4>🔒 Lokasi sekolah dikunci permanen</h4>
+                <p>Titik koordinat sekolah dikunci permanen di <b>-7.163754437737142, 112.64748517486774</b> dan tidak dapat diubah untuk mencegah manipulasi absensi. Siswa yang absen di luar radius otomatis ditolak dan tercatat Tidak Masuk.</p>
             </div>
             <p id="attendanceSettingsMessage" class="hint" role="status"></p>
             <button class="btn btn-primary" type="submit">Simpan pengaturan</button>
@@ -2078,8 +2097,6 @@ function renderAttendanceSettings() {
     form.onsubmit = async event => {
         event.preventDefault();
         const payload = {
-            latitude: Number($('#settingLatitude').value),
-            longitude: Number($('#settingLongitude').value),
             radiusMeters: Number($('#settingRadius').value),
             openTime: $('#settingOpen').value,
             closeTime: $('#settingCutoff').value,
@@ -2090,11 +2107,11 @@ function renderAttendanceSettings() {
         message.textContent = '';
         message.classList.remove('error');
         try {
-            await api('/api/admin/attendance/settings', { method: 'PUT', body: JSON.stringify(payload) });
+            const res = await api('/api/admin/attendance/settings', { method: 'PUT', body: JSON.stringify(payload) });
             schoolSettings = {
                 ...schoolSettings,
-                latitude: String(payload.latitude),
-                longitude: String(payload.longitude),
+                latitude: String(res.latitude ?? schoolSettings.latitude),
+                longitude: String(res.longitude ?? schoolSettings.longitude),
                 radius: payload.radiusMeters,
                 open: payload.openTime,
                 late: payload.lateAfter,
@@ -2103,7 +2120,7 @@ function renderAttendanceSettings() {
                 alpha: Number($('#settingAlpha').value)
             };
             persistAdminData();
-            message.textContent = 'Pengaturan lokasi dan jam absen tersimpan di server.';
+            message.textContent = 'Pengaturan radius dan jam absen tersimpan di server.';
             toast('Aturan kehadiran tersimpan di database.');
             renderAttendanceSettings();
         } catch (error) {
@@ -2115,7 +2132,39 @@ function renderAttendanceSettings() {
         }
     };
 }
-function renderReminders() { let missing = attendance.filter(item => !['Hadir', 'Terlambat', 'Izin', 'Sakit'].includes(item.status)); $('#pageContent').innerHTML = heading('TINDAK LANJUT', 'Pengingat kehadiran', 'Kirim pengingat aplikasi kepada warga yang belum mengisi kehadiran.') + `<section class="card"><div class="card-title"><h3>Belum mengisi kehadiran</h3><span class="status status-belum">${missing.length} warga</span></div><div class="table-wrap"><table><thead><tr><th>Nama</th><th>Kelas</th><th>Status</th></tr></thead><tbody>${missing.map(item => `<tr><td><b>${esc(item.name)}</b></td><td>${esc(item.kelas)}</td><td>Belum absen</td></tr>`).join('') || '<tr><td colspan="3">Semua warga sudah mengisi kehadiran.</td></tr>'}</tbody></table></div><button class="btn btn-primary" id="sendReminders" style="margin-top:18px" ${missing.length ? '' : 'disabled'}>Kirim pengingat aplikasi</button><p class="hint">Pengiriman demo hanya membuat notifikasi lokal, tidak mengirim email atau WhatsApp.</p></section>`; $('#sendReminders').onclick = () => { missing.forEach(item => notifications.unshift({ id: Date.now() + Math.random(), title: 'Pengingat kehadiran', message: `Silakan isi kehadiran hari ini, ${item.name}.`, time: Date.now(), read: false })); localStorage.setItem('sh_notifications', JSON.stringify(notifications)); updateNotificationBadge(); toast(`Pengingat demo dibuat untuk ${missing.length} warga.`) } }
+async function renderReminders() {
+    $('#pageContent').innerHTML = heading('TINDAK LANJUT', 'Daftar Tidak Masuk & Pengingat', 'Pantau siswa yang belum absen atau ditolak di luar jangkauan sekolah hari ini.') + '<div class="empty-state">Memuat data kehadiran hari ini...</div>';
+    try {
+        const result = await api('/api/admin/attendance');
+        const absentRows = result.absentToday || [];
+        const notYetRows = absentRows.filter(item => item.reason === 'BELUM_ABSEN');
+        $('#pageContent').innerHTML = heading('TINDAK LANJUT', 'Daftar Tidak Masuk & Pengingat', `Data real-time tanggal ${esc(result.today || '')}.`) +
+            `<section class="card">
+                <div class="card-title"><h3>Siswa tidak masuk hari ini</h3><span class="status status-terlambat">${absentRows.length} siswa</span></div>
+                <div class="table-wrap"><table><thead><tr><th>Nama</th><th>Kelas</th><th>Keterangan</th></tr></thead><tbody>
+                    ${absentRows.map(item => `<tr><td><b>${esc(item.name)}</b></td><td>${esc(item.detail || '-')}</td><td><span class="status ${item.reason === 'BELUM_ABSEN' ? 'status-belum' : 'status-terlambat'}">${esc(item.statusLabel)}</span></td></tr>`).join('') || '<tr><td colspan="3">Semua siswa aktif sudah hadir atau menunggu verifikasi hari ini.</td></tr>'}
+                </tbody></table></div>
+                <button class="btn btn-primary" id="sendReminders" style="margin-top:18px" ${notYetRows.length ? '' : 'disabled'}>Kirim pengingat ke ${notYetRows.length} siswa belum absen</button>
+                <p class="hint">Pengingat mengirim notifikasi langsung ke akun siswa yang belum mengisi kehadiran hari ini.</p>
+            </section>`;
+        $('#sendReminders').onclick = async () => {
+            const btn = $('#sendReminders');
+            btn.disabled = true;
+            btn.textContent = 'Mengirim pengingat...';
+            try {
+                const res = await api('/api/admin/attendance/reminders', { method: 'POST', body: '{}' });
+                toast(`Pengingat kehadiran berhasil dikirim ke ${res.count || 0} siswa.`);
+            } catch (err) {
+                toast(err.message || 'Gagal mengirim pengingat.');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = `Kirim pengingat ke ${notYetRows.length} siswa belum absen`;
+            }
+        };
+    } catch (error) {
+        $('#pageContent').innerHTML = heading('TINDAK LANJUT', 'Daftar Tidak Masuk & Pengingat', 'Gagal memuat data.') + `<div class="empty-state error">${esc(error.message)}</div>`;
+    }
+}
 function renderIdentityRequests() {
     let waiting = identityRequests.filter(item => item.status === 'Menunggu'), history = identityRequests.filter(item => item.status !== 'Menunggu'); $('#pageContent').innerHTML = heading('PRIVASI & KEAMANAN', 'Permintaan buka identitas', 'Setiap persetujuan pada versi produksi harus dilakukan admin lain dan tercatat dalam audit log.') + `<section class="card"><div class="card-title"><h3>Ajukan permintaan</h3><small>ALASAN MIN. 20 KARAKTER</small></div><form id="unlockRequestForm" class="unlock-form"><select id="unlockPost" class="field">${topics.map(topic => `<option value="${topic.id}">${esc(topic.title)}</option>`).join('')}</select><textarea id="unlockReason" class="field" required minlength="20" maxlength="500" rows="3" placeholder="Jelaskan alasan kebutuhan peninjauan..."></textarea><button class="btn btn-primary">Ajukan untuk ditinjau</button></form></section><section class="card" style="margin-top:18px"><div class="card-title"><h3>Menunggu keputusan</h3><small>${waiting.length} PERMINTAAN</small></div>${waiting.map(request => `<article class="unlock-item"><div><b>${esc(request.post)}</b><p>${esc(request.reason)}</p><small>Diajukan ${ago(request.date)}</small></div><div><button class="btn btn-outline" data-unlock-decision="${request.id}" data-decision="Ditolak">Tolak</button><button class="btn btn-primary" data-unlock-decision="${request.id}" data-decision="Disetujui">Setujui</button></div></article>`).join('') || '<div class="empty-state">Tidak ada permintaan yang menunggu.</div>'}</section><section class="card" style="margin-top:18px"><div class="card-title"><h3>Riwayat keputusan</h3><small>${history.length} KEPUTUSAN</small></div>${history.map(request => `<div class="history-row"><span class="history-check">${request.status === 'Disetujui' ? '✓' : '×'}</span><span><b>${esc(request.post)}</b><small>${esc(request.status)} · ${ago(request.date)}</small></span></div>`).join('') || '<div class="empty-state">Riwayat masih kosong.</div>'}</section>`;
     $('#unlockRequestForm').onsubmit = e => { e.preventDefault(); let reason = $('#unlockReason').value.trim(); if (reason.length < 20) return toast('Alasan harus minimal 20 karakter.'); let topic = topics.find(item => item.id === $('#unlockPost').value); identityRequests.unshift({ id: Date.now(), post: topic?.title || 'Topik sekolah', reason, status: 'Menunggu', date: Date.now() }); persistAdminData(); renderIdentityRequests(); toast('Permintaan dicatat untuk peninjauan admin lain.') }; $$('[data-unlock-decision]').forEach(btn => btn.onclick = () => { let request = identityRequests.find(item => item.id == btn.dataset.unlockDecision); request.status = btn.dataset.decision; request.date = Date.now(); persistAdminData(); renderIdentityRequests(); toast(`Permintaan ${request.status.toLowerCase()}. Akses demo berlaku 24 jam.`) })

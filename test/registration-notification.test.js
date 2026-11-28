@@ -104,13 +104,27 @@ test('new registration creates an admin notification that can be read', { timeou
 
     result = await api(baseUrl, '/api/attendance/settings', { cookie: adminCookie });
     assert.equal(result.response.status, 200);
-    assert.equal(Number(result.data.settings.latitude), -7.164041847763249);
-    assert.equal(Number(result.data.settings.longitude), 112.64734569558635);
+    assert.equal(Number(result.data.settings.latitude), -7.163754437737142);
+    assert.equal(Number(result.data.settings.longitude), 112.64748517486774);
+    assert.equal(result.data.settings.locationLocked, true);
     assert.equal(Number(result.data.settings.radiusMeters), 100);
 
+    // Security: even admin cannot alter permanently locked school coordinates
+    result = await api(baseUrl, '/api/admin/attendance/settings', {
+      method: 'PUT',
+      cookie: adminCookie,
+      body: {
+        latitude: -7.164,
+        longitude: 112.647,
+        radiusMeters: 75,
+        openTime: '07:00',
+        closeTime: '17:00',
+        lateAfter: '07:30'
+      }
+    });
+    assert.equal(result.response.status, 403);
+
     const updatedSettings = {
-      latitude: -7.164,
-      longitude: 112.647,
       radiusMeters: 75,
       openTime: '07:00',
       closeTime: '17:00',
@@ -121,8 +135,8 @@ test('new registration creates an admin notification that can be read', { timeou
     });
     assert.equal(result.response.status, 200);
     result = await api(baseUrl, '/api/attendance/settings', { cookie: adminCookie });
-    assert.equal(Number(result.data.settings.latitude), updatedSettings.latitude);
-    assert.equal(Number(result.data.settings.longitude), updatedSettings.longitude);
+    assert.equal(Number(result.data.settings.latitude), -7.163754437737142);
+    assert.equal(Number(result.data.settings.longitude), 112.64748517486774);
     assert.equal(Number(result.data.settings.radiusMeters), updatedSettings.radiusMeters);
     assert.equal(result.data.settings.closeTime, updatedSettings.closeTime);
 

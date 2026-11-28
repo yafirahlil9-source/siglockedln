@@ -108,8 +108,24 @@ renderUserAttendance = async function () {
     const faceBannerText = $('#faceRecognitionText');
     const video = $('#attendanceVideo');
 
+    let isLockedAbsentToday = false;
+    let isApprovedToday = false;
+
     function updateCaptureState() {
         if (!capture?.isConnected) return;
+        if (isLockedAbsentToday) {
+            capture.className = 'btn btn-primary locked';
+            capture.disabled = true;
+            capture.textContent = '✕ Absen ditolak hari ini (Di luar jangkauan)';
+            return;
+        }
+        if (isApprovedToday) {
+            capture.className = 'btn btn-primary locked';
+            capture.disabled = true;
+            capture.textContent = '✓ Kehadiran hari ini sudah disetujui';
+            return;
+        }
+        capture.disabled = false;
         if (consent.checked && isFaceInGuide && latestFaceDescriptor && hasRegisteredFace) {
             capture.className = 'btn btn-primary';
             capture.textContent = '✓ Kirim foto untuk diperiksa admin';
@@ -287,6 +303,12 @@ renderUserAttendance = async function () {
     };
 
     capture.onclick = async () => {
+        if (isLockedAbsentToday) {
+            return toast('Absen hari ini sudah ditolak permanen karena dilakukan di luar jangkauan sekolah. Anda masuk daftar Tidak Masuk hari ini.');
+        }
+        if (isApprovedToday) {
+            return toast('Kehadiran Anda hari ini sudah disetujui Admin.');
+        }
         // 1. Cek pendaftaran wajah
         if (!hasRegisteredFace) {
             toast('⚠️ Anda belum mendaftarkan wajah di sistem! Harap daftarkan wajah terlebih dahulu.');
@@ -384,23 +406,28 @@ renderUserAttendance = async function () {
 
             let result = await api('/api/attendance/photo', { method: 'POST', body: form });
             toast(result.message || 'Wajah terverifikasi biometrik! Kehadiran berhasil tercatat.');
-            loadMine();
+            await loadMine();
         } catch (error) {
             toast(error.message || 'Gagal mengirim foto absen.');
-            loadMine();
+            await loadMine();
         } finally {
-            capture.disabled = false;
-            capture.textContent = originalText;
+            updateCaptureState();
         }
     };
 
     async function loadMine() {
         try {
             let result = await api('/api/attendance/mine');
-            $('#myAttendanceRows').innerHTML = (result.attendance || []).map(row => {
+            const todayIso = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+            const rows = result.attendance || [];
+            const todayRow = rows.find(r => r.day === todayIso);
+            isLockedAbsentToday = Boolean(todayRow && todayRow.verification === 'DITOLAK' && todayRow.rejectionReason === 'LOKASI');
+            isApprovedToday = Boolean(todayRow && todayRow.verification === 'DISETUJUI');
+            updateCaptureState();
+            $('#myAttendanceRows').innerHTML = rows.map(row => {
                 let isApproved = row.verification === 'DISETUJUI';
                 let isRejected = row.verification === 'DITOLAK';
-                let label = isApproved ? 'Disetujui Admin' : isRejected ? 'Ditolak · Tidak hadir' : row.verification === 'MENUNGGU' ? 'Menunggu Admin' : esc(row.verification);
+                let label = isApproved ? 'Disetujui Admin' : isRejected ? (row.rejectionReason === 'LOKASI' ? 'Ditolak · Tidak Masuk (Luar Radius)' : 'Ditolak Admin') : row.verification === 'MENUNGGU' ? 'Menunggu Admin' : esc(row.verification);
                 let badgeStyle = isApproved ? 'style="background:var(--green2);color:var(--emerald)"' : isRejected ? 'style="background:rgba(251,113,133,.12);color:var(--red)"' : '';
                 return `<div class="history-row">
                     <span class="history-check" ${badgeStyle}>${isApproved ? '✓' : isRejected ? '×' : '◷'}</span>

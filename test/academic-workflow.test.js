@@ -288,12 +288,27 @@ test('academic administration, materials, tasks, attendance exports, and photo M
       subjectId: artId, title: 'Materi Seni', content: 'Materi dasar seni budaya.', url: 'https://example.com/materi'
     }, teacher.cookie, { name: 'materi.txt', type: 'text/plain', buffer: Buffer.from('Isi berkas materi') });
     assert.equal(result.response.status, 201, JSON.stringify(result.data));
+    assert.equal(result.data.className, 'Semua kelas');
     const artMaterialId = result.data.id;
     result = await postForm(server.baseUrl, '/api/materials', {
-      subjectId: math.id, title: 'Materi Matematika', content: 'Materi dasar matematika.'
+      subjectId: math.id, className: targetClass.name, title: 'Materi Matematika Khusus X RPL 1', content: 'Materi dasar matematika.'
     }, teacher.cookie, { name: 'matematika.txt', type: 'text/plain', buffer: Buffer.from('Isi matematika') });
     assert.equal(result.response.status, 201, JSON.stringify(result.data));
+    assert.equal(result.data.className, targetClass.name);
     const mathMaterialId = result.data.id;
+
+    // Invalid class or admin accessing material management must be rejected
+    result = await postForm(server.baseUrl, '/api/materials', {
+      subjectId: math.id, className: 'KELAS TIDAK ADA', title: 'Materi Palsu', content: 'Tidak valid.'
+    }, teacher.cookie);
+    assert.equal(result.response.status, 404);
+    result = await api(server.baseUrl, '/api/materials', { cookie: admin.cookie });
+    assert.equal(result.response.status, 403);
+    result = await api(server.baseUrl, `/api/materials/${artMaterialId}/file`, { cookie: admin.cookie });
+    assert.equal(result.response.status, 403);
+    result = await api(server.baseUrl, '/api/teaching/me', { cookie: admin.cookie });
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(result.data.materials, []);
 
     result = await api(server.baseUrl, `/api/materials/${artMaterialId}`, { method: 'DELETE', cookie: secondTeacher.cookie });
     assert.equal(result.response.status, 403);
@@ -303,6 +318,31 @@ test('academic administration, materials, tasks, attendance exports, and photo M
     const fileResponse = await fetch(`${server.baseUrl}/api/materials/${artMaterialId}/file`, { headers: { Cookie: teacher.cookie } });
     assert.equal(fileResponse.status, 200);
     assert.equal(await fileResponse.text(), 'Isi berkas materi');
+
+    // Cross-class assignment/material security check
+    const otherStudentEmail = `other-student-${crypto.randomUUID()}@example.com`;
+    result = await api(server.baseUrl, '/api/auth/register', {
+      method: 'POST',
+      body: {
+        name: 'Siswa Kelas Lain', email: otherStudentEmail, password: studentPassword, role: 'SISWA',
+        identityNumber: 'NIS-OTHER-1', detail: 'XII RPL 1'
+      }
+    });
+    assert.equal(result.response.status, 201);
+    const otherStudent = await login(server.baseUrl, otherStudentEmail, studentPassword);
+    const otherMaterials = await api(server.baseUrl, '/api/materials', { cookie: otherStudent.cookie });
+    assert.equal(otherMaterials.response.status, 200);
+    assert.ok(otherMaterials.data.materials.some(m => m.id === artMaterialId));
+    assert.equal(otherMaterials.data.materials.some(m => m.id === mathMaterialId), false);
+    const blockedMaterialFile = await fetch(`${server.baseUrl}/api/materials/${mathMaterialId}/file`, { headers: { Cookie: otherStudent.cookie } });
+    assert.equal(blockedMaterialFile.status, 403);
+
+    // Teacher cannot link a task for XII RPL 1 to a material restricted to X RPL 1
+    result = await postForm(server.baseUrl, '/api/assignments', {
+      title: 'Tugas Salah Kelas', instructions: 'Tidak cocok kelas materi.',
+      subjectId: math.id, className: 'XII RPL 1', materialId: mathMaterialId, category: 'Teori', dueAt: new Date(Date.now() + 86400000).toISOString(), maxScore: 100
+    }, teacher.cookie);
+    assert.equal(result.response.status, 422);
 
     const dueAt = new Date(Date.now() + 86400000).toISOString();
     const taskFields = {
@@ -475,6 +515,14 @@ test('academic administration, materials, tasks, attendance exports, and photo M
 
     summaryExport = await fetch(`${server.baseUrl}/api/admin/reports/export?format=pdf`, { headers: { Cookie: admin.cookie } });
     assert.equal(summaryExport.status, 422);
+
+    // Role authorization security checks for admin-only endpoints
+    const forbiddenExport = await fetch(`${server.baseUrl}/api/admin/reports/export?format=xlsx`, { headers: { Cookie: teacher.cookie } });
+    assert.equal(forbiddenExport.status, 403);
+    const forbiddenSubjectCreate = await api(server.baseUrl, '/api/admin/subjects', {
+      method: 'POST', cookie: teacher.cookie, body: { name: 'Mapel Ilegal' }
+    });
+    assert.equal(forbiddenSubjectCreate.response.status, 403);
 
     let photoResponse = await fetch(`${server.baseUrl}/api/attendance/${photoIds[0]}/photo`, { headers: { Cookie: admin.cookie } });
     assert.equal(photoResponse.status, 200);

@@ -17,6 +17,8 @@ const multer = require('multer');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
+const LOCKED_SCHOOL_LATITUDE = -7.163754437737142;
+const LOCKED_SCHOOL_LONGITUDE = 112.64748517486774;
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
 const publicDir = path.join(__dirname, 'public');
 const photoDir = path.join(dataDir, 'attendance-photos');
@@ -334,6 +336,7 @@ const databasePromise = (async () => {
 	await pool.execute(`CREATE TABLE IF NOT EXISTS materi (
 		id VARCHAR(36) PRIMARY KEY,
 		subject_id INT NOT NULL,
+		class_name VARCHAR(60) NOT NULL DEFAULT 'Semua kelas',
 		title VARCHAR(150) NOT NULL,
 		content TEXT NOT NULL,
 		url VARCHAR(500) DEFAULT NULL,
@@ -344,6 +347,9 @@ const databasePromise = (async () => {
 		FOREIGN KEY (subject_id) REFERENCES mata_pelajaran(id),
 		FOREIGN KEY (created_by) REFERENCES pengguna(id) ON DELETE CASCADE
 	) ENGINE=InnoDB`);
+	try {
+		await pool.execute("ALTER TABLE materi ADD COLUMN class_name VARCHAR(60) NOT NULL DEFAULT 'Semua kelas'");
+	} catch (_) {}
 
 	await pool.execute(`CREATE TABLE IF NOT EXISTS guru_mata_pelajaran (
 		teacher_id VARCHAR(36) NOT NULL,
@@ -435,11 +441,11 @@ const databasePromise = (async () => {
 	) ENGINE=InnoDB`);
 
 	await pool.execute(`INSERT INTO pengaturan_sekolah (id, latitude, longitude, radius_meters, open_time, close_time, late_after)
-		VALUES (1, -7.164041847763249, 112.64734569558635, 100, '06:30', '23:59', '07:15')
-		ON DUPLICATE KEY UPDATE close_time = IF(close_time = '10:00', '23:59', close_time)`);
-	await pool.execute(`UPDATE pengaturan_sekolah SET latitude=?,longitude=?,radius_meters=?
-		WHERE id=1 AND latitude=-6.2 AND longitude=106.816666`,
-	[-7.164041847763249, 112.64734569558635, 100]);
+		VALUES (1, ?, ?, 100, '06:30', '23:59', '07:15')
+		ON DUPLICATE KEY UPDATE close_time = IF(close_time = '10:00', '23:59', close_time)`,
+	[LOCKED_SCHOOL_LATITUDE, LOCKED_SCHOOL_LONGITUDE]);
+	await pool.execute('UPDATE pengaturan_sekolah SET latitude=?,longitude=? WHERE id=1',
+	[LOCKED_SCHOOL_LATITUDE, LOCKED_SCHOOL_LONGITUDE]);
 
 	if (autoActivateAccounts) await db.run("UPDATE pengguna SET status='AKTIF' WHERE status='PENDING'");
 	const [legacyFaceRows] = await pool.execute('SELECT id,face_descriptor FROM pengguna WHERE face_descriptor IS NOT NULL');
@@ -481,11 +487,19 @@ const teacherAssignmentSchema = z.object({
 });
 const materialSchema = z.object({
 	subjectId: z.coerce.number().int().positive(),
+	className: z.string().trim().min(2).max(60).optional().default('Semua kelas'),
 	title: z.string().trim().min(3).max(150),
 	content: z.string().trim().min(5).max(20000),
 	url: z.string().trim().max(500).optional().default('')
 });
-const settingsSchema = z.object({ latitude: z.number().min(-90).max(90), longitude: z.number().min(-180).max(180), radiusMeters: z.number().int().min(30).max(500), openTime: z.string().regex(/^\d{2}:\d{2}$/), closeTime: z.string().regex(/^\d{2}:\d{2}$/), lateAfter: z.string().regex(/^\d{2}:\d{2}$/) }).refine(data => {
+const settingsSchema = z.object({
+	latitude: z.number().min(-90).max(90).optional(),
+	longitude: z.number().min(-180).max(180).optional(),
+	radiusMeters: z.number().int().min(30).max(500),
+	openTime: z.string().regex(/^\d{2}:\d{2}$/),
+	closeTime: z.string().regex(/^\d{2}:\d{2}$/),
+	lateAfter: z.string().regex(/^\d{2}:\d{2}$/)
+}).refine(data => {
 	const minutes = value => Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
 	const valid = [data.openTime, data.closeTime, data.lateAfter].every(value => Number(value.slice(0, 2)) < 24 && Number(value.slice(3, 5)) < 60);
 	return valid && minutes(data.openTime) < minutes(data.closeTime) && minutes(data.openTime) <= minutes(data.lateAfter) && minutes(data.lateAfter) <= minutes(data.closeTime);
@@ -1034,7 +1048,9 @@ app.get('/api/teaching/me', requireActiveUser, async (req, res, next) => {
 		const db = await databasePromise;
 		let subjects = await db.all('SELECT id,name FROM mata_pelajaran ORDER BY name ASC');
 		const classes = await db.all('SELECT id,name FROM kelas ORDER BY name ASC');
-		let materials = await db.all(`SELECT m.id,m.subject_id AS subjectId,mp.name AS subject,m.title,m.content,m.url,
+		let materials = req.user.role === 'ADMIN'
+			? []
+			: await db.all(`SELECT m.id,m.subject_id AS subjectId,mp.name AS subject,m.class_name AS className,m.title,m.content,m.url,
 			m.file_name AS fileName,m.file_original_name AS fileOriginalName,m.created_by AS createdBy,
 			u.full_name AS teacherName,m.created_at AS createdAt,(m.file_name IS NOT NULL) AS hasFile
 			FROM materi m JOIN mata_pelajaran mp ON mp.id=m.subject_id JOIN pengguna u ON u.id=m.created_by
@@ -1043,6 +1059,8 @@ app.get('/api/teaching/me', requireActiveUser, async (req, res, next) => {
 			subjects = await db.all(`SELECT mp.id,mp.name FROM guru_mata_pelajaran g
 				JOIN mata_pelajaran mp ON mp.id=g.subject_id WHERE g.teacher_id=? ORDER BY mp.name`, req.user.id);
 			materials = materials.filter(material => material.createdBy === req.user.id);
+		} else if (req.user.role === 'SISWA') {
+			materials = materials.filter(material => classMatches(req.user.detail, material.className));
 		}
 		res.json({ subjects, classes, materials });
 	} catch (error) {
@@ -1071,6 +1089,7 @@ app.get('/api/admin/teachers', requireActiveUser, requireAdmin, async (req, res,
 });
 
 app.get('/api/materials', requireActiveUser, async (req, res, next) => {
+	if (req.user.role === 'ADMIN') return res.status(403).json({ error: 'Admin hanya mengelola daftar mata pelajaran.' });
 	try {
 		const db = await databasePromise;
 		const subjectId = Number(req.query.subjectId || 0);
@@ -1086,11 +1105,14 @@ app.get('/api/materials', requireActiveUser, async (req, res, next) => {
 			params.push(req.user.id);
 		}
 		const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-		const materials = await db.all(`SELECT m.id,m.subject_id AS subjectId,mp.name AS subject,m.title,m.content,m.url,
+		let materials = await db.all(`SELECT m.id,m.subject_id AS subjectId,mp.name AS subject,m.class_name AS className,m.title,m.content,m.url,
 			m.file_name AS fileName,m.file_original_name AS fileOriginalName,m.created_by AS createdBy,
 			u.full_name AS teacherName,m.created_at AS createdAt,(m.file_name IS NOT NULL) AS hasFile
 			FROM materi m JOIN mata_pelajaran mp ON mp.id=m.subject_id JOIN pengguna u ON u.id=m.created_by
 			${where} ORDER BY m.created_at DESC LIMIT 200`, ...params);
+		if (req.user.role === 'SISWA') {
+			materials = materials.filter(material => classMatches(req.user.detail, material.className));
+		}
 		res.json({ materials });
 	} catch (error) {
 		next(error);
@@ -1101,11 +1123,12 @@ app.post('/api/materials', sameOrigin, requireActiveUser, materialUpload.single(
 	if (req.user.role !== 'GURU') return res.status(403).json({ error: 'Hanya guru yang dapat membuat materi.' });
 	const parsed = materialSchema.safeParse({
 		subjectId: req.body.subjectId,
+		className: req.body.className || 'Semua kelas',
 		title: req.body.title,
 		content: req.body.content,
 		url: req.body.url || ''
 	});
-	if (!parsed.success) return res.status(422).json({ error: 'Judul, isi materi, atau mata pelajaran tidak valid.' });
+	if (!parsed.success) return res.status(422).json({ error: 'Judul, isi materi, kelas, atau mata pelajaran tidak valid.' });
 	if (parsed.data.url) {
 		try {
 			const url = new URL(parsed.data.url);
@@ -1119,9 +1142,13 @@ app.post('/api/materials', sameOrigin, requireActiveUser, materialUpload.single(
 		const db = await databasePromise;
 		const subject = await db.get('SELECT id,name FROM mata_pelajaran WHERE id=?', parsed.data.subjectId);
 		if (!subject) return res.status(404).json({ error: 'Mata pelajaran tidak ditemukan.' });
-		if (req.user.role === 'GURU') {
-			const assigned = await db.get('SELECT 1 FROM guru_mata_pelajaran WHERE teacher_id=? AND subject_id=?', req.user.id, subject.id);
-			if (!assigned) return res.status(403).json({ error: 'Materi hanya dapat dibuat untuk mata pelajaran yang Anda ampu.' });
+		const assigned = await db.get('SELECT 1 FROM guru_mata_pelajaran WHERE teacher_id=? AND subject_id=?', req.user.id, subject.id);
+		if (!assigned) return res.status(403).json({ error: 'Materi hanya dapat dibuat untuk mata pelajaran yang Anda ampu.' });
+		let targetClassName = 'Semua kelas';
+		if (!isAllClasses(parsed.data.className)) {
+			const cls = await db.get('SELECT id,name FROM kelas WHERE LOWER(name)=LOWER(?)', parsed.data.className);
+			if (!cls) return res.status(404).json({ error: 'Kelas tujuan tidak ditemukan.' });
+			targetClassName = cls.name;
 		}
 		const id = crypto.randomUUID();
 		if (req.file) {
@@ -1129,10 +1156,10 @@ app.post('/api/materials', sameOrigin, requireActiveUser, materialUpload.single(
 			fileName = `${id}${ext}`;
 			await writeFileAtomic(path.join(materialDir, fileName), req.file.buffer);
 		}
-		await db.run('INSERT INTO materi (id,subject_id,title,content,url,file_name,file_original_name,created_by) VALUES (?,?,?,?,?,?,?,?)',
-			id, subject.id, parsed.data.title, parsed.data.content, parsed.data.url || null, fileName, req.file?.originalname || null, req.user.id);
+		await db.run('INSERT INTO materi (id,subject_id,class_name,title,content,url,file_name,file_original_name,created_by) VALUES (?,?,?,?,?,?,?,?,?)',
+			id, subject.id, targetClassName, parsed.data.title, parsed.data.content, parsed.data.url || null, fileName, req.file?.originalname || null, req.user.id);
 		inserted = true;
-		res.status(201).json({ id, subject: subject.name, fileName, fileOriginalName: req.file?.originalname || null });
+		res.status(201).json({ id, subject: subject.name, className: targetClassName, fileName, fileOriginalName: req.file?.originalname || null });
 	} catch (error) {
 		if (fileName && !inserted) await fs.promises.unlink(path.join(materialDir, fileName)).catch(() => {});
 		next(error);
@@ -1140,10 +1167,14 @@ app.post('/api/materials', sameOrigin, requireActiveUser, materialUpload.single(
 });
 
 app.get('/api/materials/:id/file', requireActiveUser, async (req, res, next) => {
+	if (req.user.role === 'ADMIN') return res.status(403).json({ error: 'Admin tidak mengakses berkas materi.' });
 	try {
 		const db = await databasePromise;
-		const material = await db.get('SELECT file_name,file_original_name FROM materi WHERE id=?', req.params.id);
+		const material = await db.get('SELECT class_name,file_name,file_original_name FROM materi WHERE id=?', req.params.id);
 		if (!material?.file_name) return res.status(404).json({ error: 'Lampiran materi tidak ditemukan.' });
+		if (req.user.role === 'SISWA' && !classMatches(req.user.detail, material.class_name)) {
+			return res.status(403).json({ error: 'Materi ini bukan untuk kelas Anda.' });
+		}
 		const filePath = path.join(materialDir, path.basename(material.file_name));
 		if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File materi tidak ditemukan di server.' });
 		res.download(filePath, material.file_original_name || 'materi');
@@ -1745,9 +1776,12 @@ app.post('/api/assignments', sameOrigin, requireActiveUser, assignmentUpload.sin
 		}
 		let material = null;
 		if (task.materialId) {
-			material = await db.get('SELECT id,subject_id,created_by FROM materi WHERE id=?', task.materialId);
+			material = await db.get('SELECT id,subject_id,class_name,created_by FROM materi WHERE id=?', task.materialId);
 			if (!material) return res.status(404).json({ error: 'Materi tidak ditemukan.' });
 			if (material.subject_id !== subject.id) return res.status(422).json({ error: 'Materi harus sesuai dengan mata pelajaran yang dipilih.' });
+			if (!isAllClasses(material.class_name) && normalizeClassName(material.class_name) !== normalizeClassName(cls.name)) {
+				return res.status(422).json({ error: 'Kelas tugas harus sesuai dengan kelas materi yang dipilih.' });
+			}
 			if (req.user.role === 'GURU' && material.created_by !== req.user.id) {
 				return res.status(403).json({ error: 'Guru hanya dapat memilih materi yang dibuat sendiri.' });
 			}
@@ -2141,6 +2175,7 @@ app.get('/api/admin/reports/export', requireActiveUser, requireAdmin, async (req
 			['Kehadiran Hari Ini', 'Menunggu Verifikasi', `${report.attendance.pendingToday} siswa`],
 			['Kehadiran Hari Ini', 'Ditolak', `${report.attendance.rejectedToday} siswa`],
 			['Kehadiran Hari Ini', 'Belum Absen Hari Ini', `${report.attendance.notYetToday} siswa`],
+			['Kehadiran Hari Ini', 'Total Tidak Masuk (Ditolak + Belum Absen)', `${report.attendance.rejectedToday + report.attendance.notYetToday} siswa`],
 			['Kehadiran Total', 'Semua Riwayat Absensi', `${report.attendance.totalRecords} catatan`],
 			['Tugas', 'Total Tugas Tercatat', `${report.assignments.total} tugas`],
 			['Tugas', 'Aktif (Belum Tenggat)', `${report.assignments.active} tugas`],
@@ -2184,7 +2219,18 @@ app.get('/api/admin/reports/export', requireActiveUser, requireAdmin, async (req
 app.get('/api/attendance/settings', requireActiveUser, async (_, res, next) => {
 	try {
 		const db = await databasePromise;
-		res.json({ settings: await db.get('SELECT latitude,longitude,radius_meters AS radiusMeters,open_time AS openTime,close_time AS closeTime,late_after AS lateAfter FROM pengaturan_sekolah WHERE id=1') });
+		const row = await db.get('SELECT radius_meters AS radiusMeters,open_time AS openTime,close_time AS closeTime,late_after AS lateAfter FROM pengaturan_sekolah WHERE id=1');
+		res.json({
+			settings: {
+				latitude: LOCKED_SCHOOL_LATITUDE,
+				longitude: LOCKED_SCHOOL_LONGITUDE,
+				locationLocked: true,
+				radiusMeters: row?.radiusMeters ?? 100,
+				openTime: row?.openTime ?? '06:30',
+				closeTime: row?.closeTime ?? '23:59',
+				lateAfter: row?.lateAfter ?? '07:15'
+			}
+		});
 	} catch (error) {
 		next(error);
 	}
@@ -2193,10 +2239,16 @@ app.get('/api/attendance/settings', requireActiveUser, async (_, res, next) => {
 app.put('/api/admin/attendance/settings', sameOrigin, requireActiveUser, requireAdmin, async (req, res, next) => {
 	const parsed = settingsSchema.safeParse(req.body);
 	if (!parsed.success) return res.status(422).json({ error: 'Pengaturan lokasi/jam tidak valid.' });
+	const value = parsed.data;
+	if ((value.latitude !== undefined && Math.abs(value.latitude - LOCKED_SCHOOL_LATITUDE) > 1e-9) ||
+		(value.longitude !== undefined && Math.abs(value.longitude - LOCKED_SCHOOL_LONGITUDE) > 1e-9)) {
+		return res.status(403).json({ error: 'Titik koordinat lokasi sekolah telah dikunci permanen oleh sistem dan tidak dapat diubah.' });
+	}
 	try {
-		const value = parsed.data, db = await databasePromise;
-		await db.run('UPDATE pengaturan_sekolah SET latitude=?,longitude=?,radius_meters=?,open_time=?,close_time=?,late_after=? WHERE id=1', value.latitude, value.longitude, value.radiusMeters, value.openTime, value.closeTime, value.lateAfter);
-		res.json({ ok: true });
+		const db = await databasePromise;
+		await db.run('UPDATE pengaturan_sekolah SET latitude=?,longitude=?,radius_meters=?,open_time=?,close_time=?,late_after=? WHERE id=1',
+			LOCKED_SCHOOL_LATITUDE, LOCKED_SCHOOL_LONGITUDE, value.radiusMeters, value.openTime, value.closeTime, value.lateAfter);
+		res.json({ ok: true, latitude: LOCKED_SCHOOL_LATITUDE, longitude: LOCKED_SCHOOL_LONGITUDE, locationLocked: true });
 	} catch (error) {
 		next(error);
 	}
@@ -2225,20 +2277,37 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 		if (faceDistance >= FACE_MATCH_THRESHOLD) {
 			return res.status(403).json({ error: 'Pemeriksaan awal wajah tidak cocok dengan data akun. Silakan ulangi di depan kamera.' });
 		}
-		const distance = haversineMeters(latitude, longitude, settings.latitude, settings.longitude);
 		const now = new Date(), localTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now);
 		const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
 		const existing = await db.get('SELECT id, photo_name, verification, rejection_reason FROM kehadiran WHERE user_id=? AND day=?', req.user.id, day);
+		if (existing?.verification === 'DITOLAK' && existing?.rejection_reason === 'LOKASI') {
+			return res.status(403).json({
+				error: 'Absen hari ini telah ditolak permanen karena dilakukan di luar jangkauan sekolah. Anda masuk ke daftar Tidak Masuk hari ini.',
+				id: existing.id,
+				verification: 'DITOLAK',
+				rejectionReason: 'LOKASI',
+				absent: true,
+				lockedAbsent: true
+			});
+		}
+		if (existing?.verification === 'DISETUJUI') {
+			return res.status(409).json({ error: 'Kehadiran Anda hari ini sudah disetujui admin dan tidak dapat diubah.' });
+		}
+		const distance = haversineMeters(latitude, longitude, LOCKED_SCHOOL_LATITUDE, LOCKED_SCHOOL_LONGITUDE);
 		if (distance + accuracy > settings.radius_meters) {
-			const message = `Absen ditolak. Di luar radius sekolah (${Math.round(distance)} meter, akurasi GPS ${Math.round(accuracy)} meter) dan dianggap tidak hadir.`;
+			const message = `Absen ditolak. Di luar radius sekolah (${Math.round(distance)} meter, akurasi GPS ${Math.round(accuracy)} meter) dan Anda otomatis masuk daftar Tidak Masuk.`;
 			if (existing) {
-				return res.status(403).json({
-					error: existing.verification === 'DITOLAK' ? message : `${message} Kehadiran hari ini tidak diubah.`,
-					id: existing.id,
-					verification: existing.verification,
-					rejectionReason: existing.rejection_reason,
-					absent: existing.verification === 'DITOLAK'
-				});
+				const photoName = `${existing.id}${extension}`;
+				await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer, true);
+				await db.run('UPDATE kehadiran SET photo_name=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="DITOLAK", rejection_reason="LOKASI" WHERE id=?',
+					photoName, latitude, longitude, accuracy, now.toISOString(), existing.id);
+				if (existing.photo_name && existing.photo_name !== photoName) {
+					await fs.promises.unlink(path.join(photoDir, path.basename(existing.photo_name))).catch(() => {});
+				}
+				await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
+					crypto.randomUUID(), req.user.id, 'Absen Ditolak · Tidak Masuk',
+					`Absen tanggal ${day} ditolak karena lokasi di luar jangkauan sekolah (${Math.round(distance)} m). Anda tercatat Tidak Masuk hari ini.`);
+				return res.status(403).json({ error: message, id: existing.id, verification: 'DITOLAK', rejectionReason: 'LOKASI', absent: true, lockedAbsent: true });
 			}
 			const id = crypto.randomUUID(), photoName = `${id}${extension}`;
 			await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer);
@@ -2250,9 +2319,9 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 				throw error;
 			}
 			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
-				crypto.randomUUID(), req.user.id, 'Absen Ditolak Otomatis',
-				`Absen tanggal ${day} ditolak karena lokasi di luar radius sekolah. Anda dianggap tidak hadir.`);
-			return res.status(403).json({ error: message, id, verification: 'DITOLAK', rejectionReason: 'LOKASI', absent: true });
+				crypto.randomUUID(), req.user.id, 'Absen Ditolak · Tidak Masuk',
+				`Absen tanggal ${day} ditolak karena lokasi di luar jangkauan sekolah (${Math.round(distance)} m). Anda tercatat Tidak Masuk hari ini.`);
+			return res.status(403).json({ error: message, id, verification: 'DITOLAK', rejectionReason: 'LOKASI', absent: true, lockedAbsent: true });
 		}
 		if (isProduction && (localTime < settings.open_time || localTime > settings.close_time)) return res.status(403).json({ error: `Absen dibuka pukul ${settings.open_time}–${settings.close_time} WIB.` });
 		if (existing) {
@@ -2288,7 +2357,7 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 app.get('/api/attendance/mine', requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		res.json({ attendance: await db.all('SELECT id,day,captured_at AS capturedAt,verification FROM kehadiran WHERE user_id=? ORDER BY captured_at DESC LIMIT 60', req.user.id) });
+		res.json({ attendance: await db.all('SELECT id,day,captured_at AS capturedAt,verification,rejection_reason AS rejectionReason FROM kehadiran WHERE user_id=? ORDER BY captured_at DESC LIMIT 60', req.user.id) });
 	} catch (error) {
 		next(error);
 	}
@@ -2326,8 +2395,61 @@ app.delete('/api/attendance/:id', sameOrigin, requireActiveUser, async (req, res
 app.get('/api/admin/attendance', requireActiveUser, requireAdmin, async (_, res, next) => {
 	try {
 		const db = await databasePromise;
-		res.json({ attendance: await db.all(`SELECT a.id,a.day,a.captured_at AS capturedAt,a.verification,a.rejection_reason AS rejectionReason,a.latitude,a.longitude,a.accuracy,u.full_name AS name,u.email,u.role,u.detail AS detail
-			FROM kehadiran a JOIN pengguna u ON u.id=a.user_id ORDER BY a.captured_at DESC LIMIT 500`) });
+		const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+		const [attendance, students, todayRecords] = await Promise.all([
+			db.all(`SELECT a.id,a.day,a.captured_at AS capturedAt,a.verification,a.rejection_reason AS rejectionReason,a.latitude,a.longitude,a.accuracy,u.full_name AS name,u.email,u.role,u.detail AS detail
+				FROM kehadiran a JOIN pengguna u ON u.id=a.user_id ORDER BY a.captured_at DESC LIMIT 500`),
+			db.all("SELECT id,full_name AS name,email,detail FROM pengguna WHERE role='SISWA' AND status='AKTIF' ORDER BY detail ASC, full_name ASC"),
+			db.all('SELECT user_id,verification,rejection_reason AS rejectionReason,latitude,longitude,captured_at AS capturedAt FROM kehadiran WHERE day=?', today)
+		]);
+		const recordByUser = new Map(todayRecords.map(r => [r.user_id, r]));
+		const absentToday = [];
+		for (const student of students) {
+			const rec = recordByUser.get(student.id);
+			if (!rec) {
+				absentToday.push({
+					userId: student.id,
+					name: student.name,
+					email: student.email,
+					detail: student.detail || '-',
+					reason: 'BELUM_ABSEN',
+					statusLabel: 'Belum absen',
+					distanceMeters: null,
+					capturedAt: null
+				});
+			} else if (rec.verification === 'DITOLAK') {
+				const distanceMeters = Math.round(haversineMeters(rec.latitude, rec.longitude, LOCKED_SCHOOL_LATITUDE, LOCKED_SCHOOL_LONGITUDE));
+				absentToday.push({
+					userId: student.id,
+					name: student.name,
+					email: student.email,
+					detail: student.detail || '-',
+					reason: rec.rejectionReason === 'LOKASI' ? 'LOKASI' : 'DITOLAK',
+					statusLabel: rec.rejectionReason === 'LOKASI' ? `Ditolak sistem · Luar jangkauan (${distanceMeters} m)` : 'Ditolak Admin',
+					distanceMeters,
+					capturedAt: rec.capturedAt
+				});
+			}
+		}
+		res.json({ today, attendance, absentToday });
+	} catch (error) {
+		next(error);
+	}
+});
+
+app.post('/api/admin/attendance/reminders', sameOrigin, requireActiveUser, requireAdmin, async (_, res, next) => {
+	try {
+		const db = await databasePromise;
+		const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+		const missing = await db.all(`SELECT u.id, u.full_name AS name FROM pengguna u
+			LEFT JOIN kehadiran k ON k.user_id=u.id AND k.day=?
+			WHERE u.role='SISWA' AND u.status='AKTIF' AND k.id IS NULL`, today);
+		for (const student of missing) {
+			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
+				crypto.randomUUID(), student.id, 'Pengingat kehadiran',
+				`Silakan isi kehadiran hari ini (${today}) dari dalam area sekolah, ${student.name}.`);
+		}
+		res.json({ ok: true, count: missing.length });
 	} catch (error) {
 		next(error);
 	}

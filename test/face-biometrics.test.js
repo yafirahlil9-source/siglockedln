@@ -66,8 +66,8 @@ async function api(baseUrl, endpoint, { method = 'GET', body, cookie } = {}) {
 async function postAttendance(baseUrl, cookie, faceDescriptor, coordinates = {}, accuracy = 15) {
   const form = new FormData();
   form.append('photo', new Blob([TINY_JPEG], { type: 'image/jpeg' }), 'attendance.jpg');
-  form.append('latitude', String(coordinates.latitude ?? -7.164041847763249));
-  form.append('longitude', String(coordinates.longitude ?? 112.64734569558635));
+  form.append('latitude', String(coordinates.latitude ?? -7.163754437737142));
+  form.append('longitude', String(coordinates.longitude ?? 112.64748517486774));
   form.append('accuracy', String(accuracy));
   if (faceDescriptor !== undefined) {
     form.append('faceDescriptor', JSON.stringify(faceDescriptor));
@@ -264,21 +264,32 @@ test('encrypted face enrollment, attendance prechecks, manual review, and deleti
     const mismatchAtt = await postAttendance(baseUrl, cookie, intruderDescriptor);
     assert.equal(mismatchAtt.response.status, 403);
 
-    // 6. Reject attendance outside the school radius and record it as absent
+    // 6. Reject attendance outside the school radius and lock as Tidak Masuk for today
     const liveOwnerDescriptor = ownerDescriptor.map(v => Number((v + 0.01).toFixed(4)));
     const outsideAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor, {
-      latitude: -7.164041847763249,
-      longitude: 112.65734569558635
+      latitude: -7.163754437737142,
+      longitude: 112.65748517486774
     });
     assert.equal(outsideAtt.response.status, 403);
     assert.match(outsideAtt.data.error, /Di luar radius sekolah/);
-    assert.match(outsideAtt.data.error, /tidak hadir/);
+    assert.match(outsideAtt.data.error, /Tidak Masuk/i);
     assert.equal(outsideAtt.data.verification, 'DITOLAK');
     assert.equal(outsideAtt.data.rejectionReason, 'LOKASI');
     assert.equal(outsideAtt.data.absent, true);
+    assert.equal(outsideAtt.data.lockedAbsent, true);
 
     const rejectedMine = await api(baseUrl, '/api/attendance/mine', { cookie });
-    assert.equal(rejectedMine.data.attendance.find(row => row.id === outsideAtt.data.id).verification, 'DITOLAK');
+    const rejectedRow = rejectedMine.data.attendance.find(row => row.id === outsideAtt.data.id);
+    assert.equal(rejectedRow.verification, 'DITOLAK');
+    assert.equal(rejectedRow.rejectionReason, 'LOKASI');
+
+    // Security: retrying inside school radius on the same day remains rejected (locked Tidak Masuk), and cannot be deleted
+    const retryInside = await postAttendance(baseUrl, cookie, liveOwnerDescriptor);
+    assert.equal(retryInside.response.status, 403);
+    assert.equal(retryInside.data.verification, 'DITOLAK');
+    assert.equal(retryInside.data.lockedAbsent, true);
+    const deleteRejected = await api(baseUrl, `/api/attendance/${outsideAtt.data.id}`, { method: 'DELETE', cookie });
+    assert.equal(deleteRejected.response.status, 404);
 
     const adminLogin = await api(baseUrl, '/api/auth/login', {
       method: 'POST',
@@ -294,6 +305,12 @@ test('encrypted face enrollment, attendance prechecks, manual review, and deleti
     });
     assert.equal(rejectedApproval.response.status, 409);
 
+    const adminAtt = await api(baseUrl, '/api/admin/attendance', { cookie: adminCookie });
+    assert.equal(adminAtt.response.status, 200);
+    const absentEntry = adminAtt.data.absentToday.find(item => item.email === studentEmail);
+    assert.ok(absentEntry, 'Rejected out-of-range student must appear in absentToday');
+    assert.equal(absentEntry.reason, 'LOKASI');
+
     const rejectedReport = await api(baseUrl, '/api/admin/reports', { cookie: adminCookie });
     assert.equal(rejectedReport.data.attendance.rejectedToday, 1);
     assert.equal(rejectedReport.data.attendance.approvedToday, 0);
@@ -303,12 +320,44 @@ test('encrypted face enrollment, attendance prechecks, manual review, and deleti
     const stillRejectedMine = await api(baseUrl, '/api/attendance/mine', { cookie });
     assert.equal(stillRejectedMine.data.attendance.find(row => row.id === outsideAtt.data.id).verification, 'DITOLAK');
 
-    // 7. A later attempt from inside the school radius can correct the rejected record
-    const accuracyBoundaryAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor, {}, 100);
-    assert.equal(accuracyBoundaryAtt.response.status, 200, JSON.stringify(accuracyBoundaryAtt.data));
+    // 7. A second student inside the locked school coordinates succeeds and can be approved (and cannot be overwritten once approved)
+    const insideEmail = `inside-${crypto.randomUUID()}@edusmart-test.example.com`;
+    const insideReg = await api(baseUrl, '/api/auth/register', {
+      method: 'POST',
+      body: {
+        name: 'Siswa Dalam Radius',
+        email: insideEmail,
+        password: studentPassword,
+        role: 'SISWA',
+        identityNumber: 'NIS-IN-' + Date.now(),
+        detail: 'X RPL 1'
+      }
+    });
+    assert.equal(insideReg.response.status, 201);
+    const insideLogin = await api(baseUrl, '/api/auth/login', {
+      method: 'POST',
+      body: { email: insideEmail, password: studentPassword }
+    });
+    assert.equal(insideLogin.response.status, 200);
+    const insideCookie = sessionCookie(insideLogin.response);
+    await api(baseUrl, '/api/profile/face', {
+      method: 'POST',
+      cookie: insideCookie,
+      body: { descriptor: ownerDescriptor }
+    });
+
+    // Security: reminders endpoint requires admin
+    const studentReminderCall = await api(baseUrl, '/api/admin/attendance/reminders', { method: 'POST', cookie: insideCookie, body: {} });
+    assert.equal(studentReminderCall.response.status, 403);
+    const adminReminderCall = await api(baseUrl, '/api/admin/attendance/reminders', { method: 'POST', cookie: adminCookie, body: {} });
+    assert.equal(adminReminderCall.response.status, 200);
+    assert.equal(adminReminderCall.data.count, 1);
+
+    const accuracyBoundaryAtt = await postAttendance(baseUrl, insideCookie, liveOwnerDescriptor, {}, 100);
+    assert.equal(accuracyBoundaryAtt.response.status, 201, JSON.stringify(accuracyBoundaryAtt.data));
     assert.equal(accuracyBoundaryAtt.data.verification, 'MENUNGGU');
 
-    const matchAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor);
+    const matchAtt = await postAttendance(baseUrl, insideCookie, liveOwnerDescriptor);
     assert.equal(matchAtt.response.status, 200);
     assert.equal(matchAtt.data.verification, 'MENUNGGU');
 
@@ -319,6 +368,9 @@ test('encrypted face enrollment, attendance prechecks, manual review, and deleti
     });
     assert.equal(decision.response.status, 200);
     assert.equal(decision.data.verification, 'DISETUJUI');
+
+    const overwriteApproved = await postAttendance(baseUrl, insideCookie, liveOwnerDescriptor);
+    assert.equal(overwriteApproved.response.status, 409);
 
     // 8. Delete face descriptor and verify
     const deleteRes = await api(baseUrl, '/api/profile/face', {
