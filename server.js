@@ -17,8 +17,8 @@ const multer = require('multer');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
-const LOCKED_SCHOOL_LATITUDE = -7.163754437737142;
-const LOCKED_SCHOOL_LONGITUDE = 112.64748517486774;
+const LOCKED_SCHOOL_LATITUDE = -7.1641;
+const LOCKED_SCHOOL_LONGITUDE = 112.6473;
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
 const publicDir = path.join(__dirname, 'public');
 const photoDir = path.join(dataDir, 'attendance-photos');

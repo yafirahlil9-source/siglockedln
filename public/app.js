@@ -29,7 +29,7 @@ let bioText = '', showAverage = true, showRank = true, cameraStream = null, curr
 let notifications = [], adminAccounts = [];
 let optimisticReadNotifIds = new Set(), markAllReadPending = false;
 let availableSubjects = [], teacherSubjects = [], teacherClasses = [], teacherMaterials = [], allMaterials = [];
-let schoolSettings = { latitude: '-7.163754437737142', longitude: '112.64748517486774', locationLocked: true, radius: 100, open: '06:30', late: '07:15', cutoff: '23:59', alpha: 3 };
+let schoolSettings = { latitude: '-7.164100', longitude: '112.647300', locationLocked: true, radius: 100, open: '06:30', late: '07:15', cutoff: '23:59', alpha: 3 };
 let identityRequests = [];
 function svgIcon(name, size = 18) {
     const paths = {
@@ -2084,7 +2084,7 @@ function renderAttendanceSettings() {
             </div>
             <div class="side-note">
                 <h4>🔒 Lokasi sekolah dikunci permanen</h4>
-                <p>Titik koordinat sekolah dikunci permanen di <b>-7.163754437737142, 112.64748517486774</b> dan tidak dapat diubah untuk mencegah manipulasi absensi. Siswa yang absen di luar radius otomatis ditolak dan tercatat Tidak Masuk.</p>
+                <p>Titik koordinat sekolah dikunci permanen di <b>-7.164100, 112.647300</b> dan tidak dapat diubah untuk mencegah manipulasi absensi. Siswa yang absen di luar radius otomatis ditolak dan tercatat Tidak Masuk.</p>
             </div>
             <p id="attendanceSettingsMessage" class="hint" role="status"></p>
             <button class="btn btn-primary" type="submit">Simpan pengaturan</button>

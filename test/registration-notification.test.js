@@ -104,8 +104,8 @@ test('new registration creates an admin notification that can be read', { timeou
 
     result = await api(baseUrl, '/api/attendance/settings', { cookie: adminCookie });
     assert.equal(result.response.status, 200);
-    assert.equal(Number(result.data.settings.latitude), -7.163754437737142);
-    assert.equal(Number(result.data.settings.longitude), 112.64748517486774);
+    assert.equal(Number(result.data.settings.latitude), -7.1641);
+    assert.equal(Number(result.data.settings.longitude), 112.6473);
     assert.equal(result.data.settings.locationLocked, true);
     assert.equal(Number(result.data.settings.radiusMeters), 100);
 
@@ -114,8 +114,8 @@ test('new registration creates an admin notification that can be read', { timeou
       method: 'PUT',
       cookie: adminCookie,
       body: {
-        latitude: -7.164,
-        longitude: 112.647,
+        latitude: -7.165,
+        longitude: 112.648,
         radiusMeters: 75,
         openTime: '07:00',
         closeTime: '17:00',
@@ -135,8 +135,8 @@ test('new registration creates an admin notification that can be read', { timeou
     });
     assert.equal(result.response.status, 200);
     result = await api(baseUrl, '/api/attendance/settings', { cookie: adminCookie });
-    assert.equal(Number(result.data.settings.latitude), -7.163754437737142);
-    assert.equal(Number(result.data.settings.longitude), 112.64748517486774);
+    assert.equal(Number(result.data.settings.latitude), -7.1641);
+    assert.equal(Number(result.data.settings.longitude), 112.6473);
     assert.equal(Number(result.data.settings.radiusMeters), updatedSettings.radiusMeters);
     assert.equal(result.data.settings.closeTime, updatedSettings.closeTime);
 

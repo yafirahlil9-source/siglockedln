@@ -466,7 +466,7 @@ test('academic administration, materials, tasks, attendance exports, and photo M
         photoIds.push(row.id);
         await db.execute(
           'INSERT INTO kehadiran (id,user_id,day,photo_name,latitude,longitude,accuracy,captured_at,verification) VALUES (?,?,?,?,?,?,?,?,?)',
-          [row.id, student.user.id, row.day, row.photoName, -7.164041847763249, 112.64734569558635, 12, `${row.day}T01:00:00.000Z`, row.verification]
+          [row.id, student.user.id, row.day, row.photoName, -7.1641, 112.6473, 12, `${row.day}T01:00:00.000Z`, row.verification]
         );
       }
       const [[{ file_name: mathFileName }]] = await db.execute('SELECT file_name FROM materi WHERE id=?', [mathMaterialId]);

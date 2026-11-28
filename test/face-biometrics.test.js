@@ -66,8 +66,8 @@ async function api(baseUrl, endpoint, { method = 'GET', body, cookie } = {}) {
 async function postAttendance(baseUrl, cookie, faceDescriptor, coordinates = {}, accuracy = 15) {
   const form = new FormData();
   form.append('photo', new Blob([TINY_JPEG], { type: 'image/jpeg' }), 'attendance.jpg');
-  form.append('latitude', String(coordinates.latitude ?? -7.163754437737142));
-  form.append('longitude', String(coordinates.longitude ?? 112.64748517486774));
+  form.append('latitude', String(coordinates.latitude ?? -7.1641));
+  form.append('longitude', String(coordinates.longitude ?? 112.6473));
   form.append('accuracy', String(accuracy));
   if (faceDescriptor !== undefined) {
     form.append('faceDescriptor', JSON.stringify(faceDescriptor));
@@ -267,8 +267,8 @@ test('encrypted face enrollment, attendance prechecks, manual review, and deleti
     // 6. Reject attendance outside the school radius and lock as Tidak Masuk for today
     const liveOwnerDescriptor = ownerDescriptor.map(v => Number((v + 0.01).toFixed(4)));
     const outsideAtt = await postAttendance(baseUrl, cookie, liveOwnerDescriptor, {
-      latitude: -7.163754437737142,
-      longitude: 112.65748517486774
+      latitude: -7.1641,
+      longitude: 112.6573
     });
     assert.equal(outsideAtt.response.status, 403);
     assert.match(outsideAtt.data.error, /Di luar radius sekolah/);
