@@ -442,6 +442,7 @@ const databasePromise = (async () => {
 	) ENGINE=InnoDB`);
 	try { await pool.execute("ALTER TABLE kehadiran ADD COLUMN rejection_reason VARCHAR(30) DEFAULT NULL"); } catch (_) {}
 	try { await pool.execute("ALTER TABLE kehadiran ADD COLUMN photo_data MEDIUMBLOB DEFAULT NULL"); } catch (_) {}
+	try { await pool.execute("ALTER TABLE kehadiran ADD COLUMN is_late BOOLEAN DEFAULT FALSE"); } catch (_) {}
 	try {
 		const [missingBlobs] = await pool.execute("SELECT id, photo_name FROM kehadiran WHERE photo_data IS NULL AND photo_name IS NOT NULL");
 		for (const row of missingBlobs) {
@@ -463,11 +464,13 @@ const databasePromise = (async () => {
 	) ENGINE=InnoDB`);
 
 	await pool.execute(`INSERT INTO pengaturan_sekolah (id, latitude, longitude, radius_meters, open_time, close_time, late_after)
-		VALUES (1, ?, ?, 100, '06:30', '23:59', '07:15')
-		ON DUPLICATE KEY UPDATE close_time = IF(close_time = '10:00', '23:59', close_time)`,
+		VALUES (1, ?, ?, 100, '06:30', '23:59', '07:00')
+		ON DUPLICATE KEY UPDATE close_time = IF(close_time = '10:00', '23:59', close_time),
+		late_after = IF(late_after = '07:15', '07:00', late_after)`,
 	[LOCKED_SCHOOL_LATITUDE, LOCKED_SCHOOL_LONGITUDE]);
 	await pool.execute('UPDATE pengaturan_sekolah SET latitude=?,longitude=? WHERE id=1',
 	[LOCKED_SCHOOL_LATITUDE, LOCKED_SCHOOL_LONGITUDE]);
+	await pool.execute("UPDATE pengaturan_sekolah SET late_after='07:00' WHERE late_after='07:15' OR late_after IS NULL").catch(() => {});
 
 	if (autoActivateAccounts) await db.run("UPDATE pengguna SET status='AKTIF' WHERE status='PENDING'");
 	const [legacyFaceRows] = await pool.execute('SELECT id,face_descriptor FROM pengguna WHERE face_descriptor IS NOT NULL');
@@ -2250,7 +2253,7 @@ app.get('/api/attendance/settings', requireActiveUser, async (_, res, next) => {
 				radiusMeters: row?.radiusMeters ?? 100,
 				openTime: row?.openTime ?? '06:30',
 				closeTime: row?.closeTime ?? '23:59',
-				lateAfter: row?.lateAfter ?? '07:15'
+				lateAfter: row?.lateAfter ?? '07:00'
 			}
 		});
 	} catch (error) {
@@ -2299,8 +2302,13 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 		if (faceDistance >= FACE_MATCH_THRESHOLD) {
 			return res.status(403).json({ error: 'Absen ditolak. Wajah tidak cocok dengan data akun terdaftar. Wajah lain tidak dapat digunakan untuk absensi.' });
 		}
-		const now = new Date(), localTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now);
+		const now = new Date(), localTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(now);
+		const localTimeHM = localTime.slice(0, 5);
 		const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+		const lateCutoff = settings.late_after || '07:00';
+		const [cutoffH, cutoffM] = lateCutoff.split(':').map(Number);
+		const [curH, curM, curS] = localTime.split(':').map(Number);
+		const isLate = (curH * 3600 + curM * 60 + curS) > (cutoffH * 3600 + cutoffM * 60);
 		const existing = await db.get('SELECT id, photo_name, verification, rejection_reason FROM kehadiran WHERE user_id=? AND day=?', req.user.id, day);
 		if (existing?.verification === 'DITOLAK' && existing?.rejection_reason === 'LOKASI') {
 			return res.status(403).json({
@@ -2321,8 +2329,8 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 			if (existing) {
 				const photoName = `${existing.id}${extension}`;
 				await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer, true);
-				await db.run('UPDATE kehadiran SET photo_name=?, photo_data=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="DITOLAK", rejection_reason="LOKASI" WHERE id=?',
-					photoName, req.file.buffer, latitude, longitude, accuracy, now.toISOString(), existing.id);
+				await db.run('UPDATE kehadiran SET photo_name=?, photo_data=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="DITOLAK", rejection_reason="LOKASI", is_late=? WHERE id=?',
+					photoName, req.file.buffer, latitude, longitude, accuracy, now.toISOString(), isLate ? 1 : 0, existing.id);
 				if (existing.photo_name && existing.photo_name !== photoName) {
 					await fs.promises.unlink(path.join(photoDir, path.basename(existing.photo_name))).catch(() => {});
 				}
@@ -2334,7 +2342,7 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 			const id = crypto.randomUUID(), photoName = `${id}${extension}`;
 			await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer);
 			try {
-				await db.run('INSERT INTO kehadiran (id,user_id,day,photo_name,photo_data,latitude,longitude,accuracy,captured_at,verification,rejection_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, req.file.buffer, latitude, longitude, accuracy, now.toISOString(), 'DITOLAK', 'LOKASI');
+				await db.run('INSERT INTO kehadiran (id,user_id,day,photo_name,photo_data,latitude,longitude,accuracy,captured_at,verification,rejection_reason,is_late) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, req.file.buffer, latitude, longitude, accuracy, now.toISOString(), 'DITOLAK', 'LOKASI', isLate ? 1 : 0);
 			} catch (error) {
 				await fs.promises.unlink(path.join(photoDir, photoName)).catch(() => {});
 				if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Foto kehadiran hari ini sudah tercatat.' });
@@ -2345,32 +2353,50 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 				`Absen tanggal ${day} ditolak karena lokasi di luar jangkauan sekolah (${Math.round(distance)} m). Anda tercatat Tidak Masuk hari ini.`);
 			return res.status(403).json({ error: message, id, verification: 'DITOLAK', rejectionReason: 'LOKASI', absent: true, lockedAbsent: true });
 		}
-		if (isProduction && (localTime < settings.open_time || localTime > settings.close_time)) return res.status(403).json({ error: `Absen dibuka pukul ${settings.open_time}–${settings.close_time} WIB.` });
+		if (isProduction && (localTimeHM < settings.open_time || localTimeHM > settings.close_time)) return res.status(403).json({ error: `Absen dibuka pukul ${settings.open_time}–${settings.close_time} WIB.` });
 		if (existing) {
 			const photoName = `${existing.id}${extension}`;
 			await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer, true);
-			await db.run('UPDATE kehadiran SET photo_name=?, photo_data=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="MENUNGGU", rejection_reason=NULL WHERE id=?', photoName, req.file.buffer, latitude, longitude, accuracy, now.toISOString(), existing.id);
+			await db.run('UPDATE kehadiran SET photo_name=?, photo_data=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="MENUNGGU", rejection_reason=NULL, is_late=? WHERE id=?', photoName, req.file.buffer, latitude, longitude, accuracy, now.toISOString(), isLate ? 1 : 0, existing.id);
 			if (existing.photo_name && existing.photo_name !== photoName) {
 				await fs.promises.unlink(path.join(photoDir, path.basename(existing.photo_name))).catch(() => {});
 			}
-			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
-				crypto.randomUUID(), req.user.id, 'Kehadiran Menunggu Verifikasi',
-				`Foto kehadiran untuk tanggal ${day} berhasil diperbarui dan menunggu pemeriksaan admin.`);
-			return res.status(200).json({ id: existing.id, verification: 'MENUNGGU', capturedAt: now.toISOString(), message: 'Foto kehadiran berhasil diperbarui dan menunggu verifikasi admin.' });
+			const notifTitle = isLate ? 'Kehadiran Terlambat · Menunggu Verifikasi' : 'Kehadiran Menunggu Verifikasi';
+			const notifMsg = isLate
+				? `Foto kehadiran untuk tanggal ${day} berhasil diperbarui pukul ${localTime} WIB (TERLAMBAT, lewat batas jam ${lateCutoff} WIB) dan menunggu pemeriksaan admin.`
+				: `Foto kehadiran untuk tanggal ${day} berhasil diperbarui pukul ${localTime} WIB (Tepat Waktu) dan menunggu pemeriksaan admin.`;
+			await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)', crypto.randomUUID(), req.user.id, notifTitle, notifMsg);
+			return res.status(200).json({
+				id: existing.id,
+				verification: 'MENUNGGU',
+				capturedAt: now.toISOString(),
+				isLate,
+				localTime,
+				message: `Foto kehadiran berhasil diperbarui (${isLate ? 'Terdeteksi Terlambat - pukul ' + localTime + ' WIB' : 'Tepat Waktu - pukul ' + localTime + ' WIB'}) dan menunggu verifikasi admin.`
+			});
 		}
 		const id = crypto.randomUUID(), photoName = `${id}${extension}`;
 		await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer);
 		try {
-			await db.run('INSERT INTO kehadiran (id,user_id,day,photo_name,photo_data,latitude,longitude,accuracy,captured_at,verification) VALUES (?,?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, req.file.buffer, latitude, longitude, accuracy, now.toISOString(), 'MENUNGGU');
+			await db.run('INSERT INTO kehadiran (id,user_id,day,photo_name,photo_data,latitude,longitude,accuracy,captured_at,verification,is_late) VALUES (?,?,?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, req.file.buffer, latitude, longitude, accuracy, now.toISOString(), 'MENUNGGU', isLate ? 1 : 0);
 		} catch (error) {
 			await fs.promises.unlink(path.join(photoDir, photoName)).catch(() => {});
 			if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Foto kehadiran hari ini sudah tercatat.' });
 			throw error;
 		}
-		await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)',
-			crypto.randomUUID(), req.user.id, 'Kehadiran Menunggu Verifikasi',
-			`Foto kehadiran untuk tanggal ${day} telah dicatat dan menunggu pemeriksaan admin.`);
-		res.status(201).json({ id, verification: 'MENUNGGU', capturedAt: now.toISOString(), message: 'Foto kehadiran berhasil dicatat dan menunggu verifikasi admin.' });
+		const notifTitle = isLate ? 'Kehadiran Terlambat · Menunggu Verifikasi' : 'Kehadiran Menunggu Verifikasi';
+		const notifMsg = isLate
+			? `Foto kehadiran untuk tanggal ${day} dicatat pukul ${localTime} WIB (TERLAMBAT, lewat batas jam ${lateCutoff} WIB) dan menunggu pemeriksaan admin.`
+			: `Foto kehadiran untuk tanggal ${day} dicatat pukul ${localTime} WIB (Tepat Waktu) dan menunggu pemeriksaan admin.`;
+		await db.run('INSERT INTO notifikasi (id,user_id,title,message) VALUES (?,?,?,?)', crypto.randomUUID(), req.user.id, notifTitle, notifMsg);
+		res.status(201).json({
+			id,
+			verification: 'MENUNGGU',
+			capturedAt: now.toISOString(),
+			isLate,
+			localTime,
+			message: `Foto kehadiran berhasil dicatat (${isLate ? 'Terdeteksi Terlambat - pukul ' + localTime + ' WIB' : 'Tepat Waktu - pukul ' + localTime + ' WIB'}) dan menunggu verifikasi admin.`
+		});
 	} catch (error) {
 		next(error);
 	}
@@ -2379,7 +2405,20 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 app.get('/api/attendance/mine', requireActiveUser, async (req, res, next) => {
 	try {
 		const db = await databasePromise;
-		res.json({ attendance: await db.all('SELECT id,day,captured_at AS capturedAt,verification,rejection_reason AS rejectionReason FROM kehadiran WHERE user_id=? ORDER BY captured_at DESC LIMIT 60', req.user.id) });
+		const settings = await db.get('SELECT late_after FROM pengaturan_sekolah WHERE id=1');
+		const lateCutoff = settings?.late_after || '07:00';
+		const rows = await db.all('SELECT id,day,captured_at AS capturedAt,verification,rejection_reason AS rejectionReason,is_late AS isLate FROM kehadiran WHERE user_id=? ORDER BY captured_at DESC LIMIT 60', req.user.id);
+		const attendance = rows.map(r => {
+			let isLate = Boolean(r.isLate);
+			if (!isLate && r.capturedAt) {
+				const t = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(r.capturedAt));
+				const [cH, cM] = lateCutoff.split(':').map(Number);
+				const [rH, rM, rS] = t.split(':').map(Number);
+				if ((rH * 3600 + rM * 60 + rS) > (cH * 3600 + cM * 60)) isLate = true;
+			}
+			return { ...r, isLate };
+		});
+		res.json({ attendance, lateCutoff });
 	} catch (error) {
 		next(error);
 	}
@@ -2436,12 +2475,24 @@ app.get('/api/admin/attendance', requireActiveUser, requireAdmin, async (_, res,
 	try {
 		const db = await databasePromise;
 		const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-		const [attendance, students, todayRecords] = await Promise.all([
-			db.all(`SELECT a.id,a.day,a.captured_at AS capturedAt,a.verification,a.rejection_reason AS rejectionReason,a.latitude,a.longitude,a.accuracy,u.full_name AS name,u.email,u.role,u.detail AS detail
+		const settings = await db.get('SELECT late_after FROM pengaturan_sekolah WHERE id=1');
+		const lateCutoff = settings?.late_after || '07:00';
+		const [attendanceRaw, students, todayRecords] = await Promise.all([
+			db.all(`SELECT a.id,a.day,a.captured_at AS capturedAt,a.is_late AS isLate,a.verification,a.rejection_reason AS rejectionReason,a.latitude,a.longitude,a.accuracy,u.full_name AS name,u.email,u.role,u.detail AS detail
 				FROM kehadiran a JOIN pengguna u ON u.id=a.user_id ORDER BY a.captured_at DESC LIMIT 500`),
 			db.all("SELECT id,full_name AS name,email,detail FROM pengguna WHERE role='SISWA' AND status='AKTIF' ORDER BY detail ASC, full_name ASC"),
-			db.all('SELECT user_id,verification,rejection_reason AS rejectionReason,latitude,longitude,captured_at AS capturedAt FROM kehadiran WHERE day=?', today)
+			db.all('SELECT user_id,verification,rejection_reason AS rejectionReason,latitude,longitude,captured_at AS capturedAt,is_late AS isLate FROM kehadiran WHERE day=?', today)
 		]);
+		const attendance = attendanceRaw.map(r => {
+			let isLate = Boolean(r.isLate);
+			if (!isLate && r.capturedAt) {
+				const t = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(r.capturedAt));
+				const [cH, cM] = lateCutoff.split(':').map(Number);
+				const [rH, rM, rS] = t.split(':').map(Number);
+				if ((rH * 3600 + rM * 60 + rS) > (cH * 3600 + cM * 60)) isLate = true;
+			}
+			return { ...r, isLate };
+		});
 		const recordByUser = new Map(todayRecords.map(r => [r.user_id, r]));
 		const absentToday = [];
 		for (const student of students) {
@@ -2471,7 +2522,7 @@ app.get('/api/admin/attendance', requireActiveUser, requireAdmin, async (_, res,
 				});
 			}
 		}
-		res.json({ today, attendance, absentToday });
+		res.json({ today, attendance, absentToday, lateCutoff });
 	} catch (error) {
 		next(error);
 	}

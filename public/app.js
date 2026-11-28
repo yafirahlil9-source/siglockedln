@@ -29,7 +29,7 @@ let bioText = '', showAverage = true, showRank = true, cameraStream = null, curr
 let notifications = [], adminAccounts = [];
 let optimisticReadNotifIds = new Set(), markAllReadPending = false;
 let availableSubjects = [], teacherSubjects = [], teacherClasses = [], teacherMaterials = [], allMaterials = [];
-let schoolSettings = { latitude: '-7.164100', longitude: '112.647300', locationLocked: true, radius: 100, open: '06:30', late: '07:15', cutoff: '23:59', alpha: 3 };
+let schoolSettings = { latitude: '-7.164100', longitude: '112.647300', locationLocked: true, radius: 100, open: '06:30', late: '07:00', cutoff: '23:59', alpha: 3 };
 let identityRequests = [];
 function svgIcon(name, size = 18) {
     const paths = {
@@ -976,7 +976,14 @@ renderAttendance = function () {
             let result = await api('/api/admin/attendance');
             let rows = result.attendance || [];
             let absentRows = result.absentToday || [];
-            $('#adminAttendanceRows').innerHTML = rows.map(row => `
+            $('#adminAttendanceRows').innerHTML = rows.map(row => {
+                let isLate = Boolean(row.isLate);
+                let timeStr = row.capturedAt ? new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(row.capturedAt)) + ' WIB' : '-';
+                let latePill = (row.verification !== 'DITOLAK' && row.capturedAt)
+                    ? (isLate ? '<span class="status status-terlambat" style="font-size:10.5px;padding:2px 7px;border-radius:10px;margin-top:3px;display:inline-block">⚠ Terlambat (Lewat 07:00)</span>'
+                              : '<span class="status status-selesai" style="font-size:10.5px;padding:2px 7px;border-radius:10px;margin-top:3px;display:inline-block">✓ Tepat Waktu</span>')
+                    : '';
+                return `
                 <tr>
                     <td>
                         <div class="attendance-photo-wrap">
@@ -986,7 +993,11 @@ renderAttendance = function () {
                     </td>
                     <td><b>${esc(row.name)}</b><br><small class="muted">${esc(row.email || '')}</small></td>
                     <td><span class="role-tag">${esc(row.detail || '-')}</span></td>
-                    <td>${new Date(row.capturedAt).toLocaleString('id-ID')}<br><small class="muted">${esc(row.day)}</small></td>
+                    <td>
+                        <div><b>${timeStr}</b></div>
+                        <small class="muted">${esc(row.day)}</small><br>
+                        ${latePill}
+                    </td>
                     <td><span class="status ${row.verification === 'DISETUJUI' ? 'status-selesai' : (row.verification === 'DITOLAK' ? 'status-terlambat' : 'status-belum')}">${row.verification === 'DISETUJUI' ? '✓ Disetujui Admin' : row.verification === 'DITOLAK' ? (row.rejectionReason === 'LOKASI' ? 'Ditolak · Tidak masuk' : 'Ditolak') : esc(row.verification)}</span></td>
                     <td>
                         <div style="display:flex;gap:6px">
@@ -1000,7 +1011,7 @@ renderAttendance = function () {
                         </div>
                     </td>
                 </tr>
-            `).join('') || '<tr><td colspan="6" class="empty-state">Belum ada pengajuan absensi hari ini.</td></tr>';
+            `}).join('') || '<tr><td colspan="6" class="empty-state">Belum ada pengajuan absensi hari ini.</td></tr>';
             bindAttendancePhotoFallbacks($('#adminAttendanceRows'));
 
             $('#absentTodayCount').textContent = `${absentRows.length} TIDAK MASUK`;

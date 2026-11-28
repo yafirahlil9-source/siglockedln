@@ -356,6 +356,19 @@ test('encrypted face enrollment, attendance prechecks, manual review, and deleti
     const accuracyBoundaryAtt = await postAttendance(baseUrl, insideCookie, liveOwnerDescriptor, {}, 100);
     assert.equal(accuracyBoundaryAtt.response.status, 201, JSON.stringify(accuracyBoundaryAtt.data));
     assert.equal(accuracyBoundaryAtt.data.verification, 'MENUNGGU');
+    assert.ok(typeof accuracyBoundaryAtt.data.isLate === 'boolean', 'isLate must be returned');
+    assert.ok(typeof accuracyBoundaryAtt.data.localTime === 'string', 'localTime must be returned');
+    assert.match(accuracyBoundaryAtt.data.message, /(Terlambat|Tepat Waktu)/);
+
+    // Verify attendance settings default late cutoff is 07:00
+    const settingsCheck = await api(baseUrl, '/api/attendance/settings', { cookie: insideCookie });
+    assert.equal(settingsCheck.data.settings.lateAfter, '07:00', 'Default late cutoff must be 07:00');
+
+    // Verify student attendance history includes isLate and lateCutoff
+    const insideMine = await api(baseUrl, '/api/attendance/mine', { cookie: insideCookie });
+    assert.equal(insideMine.data.lateCutoff, '07:00');
+    assert.ok(insideMine.data.attendance.length > 0);
+    assert.ok(typeof insideMine.data.attendance[0].isLate === 'boolean');
 
     const matchAtt = await postAttendance(baseUrl, insideCookie, liveOwnerDescriptor);
     assert.equal(matchAtt.response.status, 200);

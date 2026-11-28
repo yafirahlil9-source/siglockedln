@@ -4,6 +4,10 @@ renderUserAttendance = async function () {
         cameraStream.getTracks().forEach(track => track.stop());
         cameraStream = null;
     }
+    if (window._attendanceLiveClockTimer) {
+        clearInterval(window._attendanceLiveClockTimer);
+        window._attendanceLiveClockTimer = null;
+    }
 
     let location = null;
     let faceDetectorTimer = null;
@@ -46,6 +50,22 @@ renderUserAttendance = async function () {
                     </button>
                 </div>
             ` : ''}
+
+            <div class="attendance-clock-banner" id="attendanceLiveClockCard">
+                <div class="attendance-clock-left">
+                    <span class="clock-icon" aria-hidden="true">🕒</span>
+                    <div>
+                        <div class="attendance-clock-digital" id="attendanceClockDigital">--:--:-- WIB</div>
+                        <div class="attendance-clock-sub" id="attendanceClockDate">Waktu Indonesia Barat (WIB)</div>
+                    </div>
+                </div>
+                <div class="attendance-clock-right">
+                    <span class="attendance-clock-badge ontime" id="attendanceTimeBadge">
+                        ✓ Tepat Waktu (Batas: 07:00 WIB)
+                    </span>
+                    <small class="muted" style="font-size:10.5px">Absen &gt; 07:00 WIB terdeteksi telat</small>
+                </div>
+            </div>
 
             <div class="camera-frame">
                 <video id="attendanceVideo" autoplay muted playsinline></video>
@@ -155,6 +175,54 @@ renderUserAttendance = async function () {
     }
     consent.onchange = updateCaptureState;
     updateCaptureState();
+
+    function updateAttendanceLiveClock() {
+        const digitalEl = $('#attendanceClockDigital');
+        const dateEl = $('#attendanceClockDate');
+        const badgeEl = $('#attendanceTimeBadge');
+        if (!digitalEl || !document.body.contains(digitalEl)) {
+            if (window._attendanceLiveClockTimer) {
+                clearInterval(window._attendanceLiveClockTimer);
+                window._attendanceLiveClockTimer = null;
+            }
+            return;
+        }
+        const now = new Date();
+        const timeStr = new Intl.DateTimeFormat('id-ID', {
+            timeZone: 'Asia/Jakarta',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hourCycle: 'h23'
+        }).format(now);
+        const dateStr = new Intl.DateTimeFormat('id-ID', {
+            timeZone: 'Asia/Jakarta',
+            weekday: 'long',
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric'
+        }).format(now);
+        const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', hourCycle: 'h23' }).format(now));
+        const minute = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', minute: '2-digit' }).format(now));
+        const second = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', second: '2-digit' }).format(now));
+        const lateCutoff = (schoolSettings && schoolSettings.late) ? schoolSettings.late : '07:00';
+        const [cutoffH, cutoffM] = lateCutoff.split(':').map(Number);
+        const isLate = (hour * 3600 + minute * 60 + second) > (cutoffH * 3600 + cutoffM * 60);
+
+        digitalEl.textContent = `${timeStr} WIB`;
+        if (dateEl) dateEl.textContent = dateStr;
+        if (badgeEl) {
+            if (isLate) {
+                badgeEl.className = 'attendance-clock-badge late';
+                badgeEl.innerHTML = `⚠ Terlambat (Lewat ${lateCutoff} WIB)`;
+            } else {
+                badgeEl.className = 'attendance-clock-badge ontime';
+                badgeEl.innerHTML = `✓ Tepat Waktu (Sebelum ${lateCutoff} WIB)`;
+            }
+        }
+    }
+    updateAttendanceLiveClock();
+    window._attendanceLiveClockTimer = setInterval(updateAttendanceLiveClock, 500);
 
     $('#closePhotoDialog').onclick = () => $('#photoDialog').close();
 
@@ -467,12 +535,22 @@ renderUserAttendance = async function () {
             let ctx = canvas.getContext('2d');
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-            const boxW = Math.min(canvas.width - 32, 480);
-            ctx.fillStyle = 'rgba(10, 20, 15, 0.72)';
+            const now = new Date();
+            const timeStr = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(now);
+            const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', hourCycle: 'h23' }).format(now));
+            const minute = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', minute: '2-digit' }).format(now));
+            const second = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', second: '2-digit' }).format(now));
+            const lateCutoff = (schoolSettings && schoolSettings.late) ? schoolSettings.late : '07:00';
+            const [cutoffH, cutoffM] = lateCutoff.split(':').map(Number);
+            const isLate = (hour * 3600 + minute * 60 + second) > (cutoffH * 3600 + cutoffM * 60);
+            const statusLabel = isLate ? 'TERLAMBAT' : 'TEPAT WAKTU';
+
+            const boxW = Math.min(canvas.width - 32, 540);
+            ctx.fillStyle = isLate ? 'rgba(38, 20, 8, 0.88)' : 'rgba(10, 24, 16, 0.88)';
             ctx.fillRect(16, canvas.height - 48, boxW, 34);
-            ctx.fillStyle = '#22c55e';
+            ctx.fillStyle = isLate ? '#fbbf24' : '#22c55e';
             ctx.font = 'bold 12.5px sans-serif';
-            ctx.fillText(`✓ BIOMETRIK VALID • ${accountOwnerName.toUpperCase()} • ${new Date().toLocaleTimeString('id-ID')}`, 26, canvas.height - 26);
+            ctx.fillText(`✓ BIOMETRIK VALID • ${accountOwnerName.toUpperCase()} • ${timeStr} WIB • [${statusLabel}]`, 26, canvas.height - 26);
 
             let blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.88));
             if (!blob || blob.size < 1000) throw new Error('Foto tidak valid atau korup dari kamera. Pastikan pencahayaan cukup dan coba lagi.');
@@ -517,13 +595,16 @@ renderUserAttendance = async function () {
             $('#myAttendanceRows').innerHTML = rows.map(row => {
                 let isApproved = row.verification === 'DISETUJUI';
                 let isRejected = row.verification === 'DITOLAK';
+                let isLate = Boolean(row.isLate);
                 let label = isApproved ? 'Disetujui Admin' : isRejected ? (row.rejectionReason === 'LOKASI' ? 'Absen Ditolak · Tidak Masuk (Di Luar Koordinat Sekolah)' : 'Absen Ditolak Admin') : row.verification === 'MENUNGGU' ? 'Menunggu Admin' : esc(row.verification);
                 let badgeStyle = isApproved ? 'style="background:var(--green2);color:var(--emerald)"' : isRejected ? 'style="background:rgba(251,113,133,.12);color:var(--red)"' : '';
+                let timeStr = row.capturedAt ? new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(row.capturedAt)) + ' WIB' : '';
+                let latePill = (!isRejected && timeStr) ? (isLate ? '<span class="attendance-time-pill late">⚠ Terlambat</span>' : '<span class="attendance-time-pill ontime">✓ Tepat Waktu</span>') : '';
                 return `<div class="history-row">
                     <span class="history-check" ${badgeStyle}>${isApproved ? '✓' : isRejected ? '×' : '◷'}</span>
                     <span>
-                        <b>${label}</b>
-                        <small>${esc(row.day)} · ${new Date(row.capturedAt).toLocaleTimeString('id-ID')}</small>
+                        <b>${label}${latePill}</b>
+                        <small>${esc(row.day)}${timeStr ? ' · ' + timeStr : ''}</small>
                     </span>
                     <img class="attendance-thumb" src="/api/attendance/${encodeURIComponent(row.id)}/photo" alt="Foto absensi" data-attendance-preview>
                     ${row.verification === 'MENUNGGU' ? `<button class="photo-delete" data-attendance-delete="${esc(row.id)}" aria-label="Hapus foto">×</button>` : ''}
