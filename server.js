@@ -441,6 +441,19 @@ const databasePromise = (async () => {
 		FOREIGN KEY (user_id) REFERENCES pengguna(id)
 	) ENGINE=InnoDB`);
 	try { await pool.execute("ALTER TABLE kehadiran ADD COLUMN rejection_reason VARCHAR(30) DEFAULT NULL"); } catch (_) {}
+	try { await pool.execute("ALTER TABLE kehadiran ADD COLUMN photo_data MEDIUMBLOB DEFAULT NULL"); } catch (_) {}
+	try {
+		const [missingBlobs] = await pool.execute("SELECT id, photo_name FROM kehadiran WHERE photo_data IS NULL AND photo_name IS NOT NULL");
+		for (const row of missingBlobs) {
+			const p = path.join(photoDir, path.basename(row.photo_name));
+			if (fs.existsSync(p)) {
+				const buf = await fs.promises.readFile(p);
+				if (buf && buf.length > 0) {
+					await pool.execute("UPDATE kehadiran SET photo_data=? WHERE id=?", [buf, row.id]);
+				}
+			}
+		}
+	} catch (_) {}
 
 	await pool.execute(`CREATE TABLE IF NOT EXISTS notifikasi (
 		id VARCHAR(36) PRIMARY KEY, user_id VARCHAR(36) NOT NULL,
@@ -2308,8 +2321,8 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 			if (existing) {
 				const photoName = `${existing.id}${extension}`;
 				await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer, true);
-				await db.run('UPDATE kehadiran SET photo_name=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="DITOLAK", rejection_reason="LOKASI" WHERE id=?',
-					photoName, latitude, longitude, accuracy, now.toISOString(), existing.id);
+				await db.run('UPDATE kehadiran SET photo_name=?, photo_data=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="DITOLAK", rejection_reason="LOKASI" WHERE id=?',
+					photoName, req.file.buffer, latitude, longitude, accuracy, now.toISOString(), existing.id);
 				if (existing.photo_name && existing.photo_name !== photoName) {
 					await fs.promises.unlink(path.join(photoDir, path.basename(existing.photo_name))).catch(() => {});
 				}
@@ -2321,7 +2334,7 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 			const id = crypto.randomUUID(), photoName = `${id}${extension}`;
 			await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer);
 			try {
-				await db.run('INSERT INTO kehadiran (id,user_id,day,photo_name,latitude,longitude,accuracy,captured_at,verification,rejection_reason) VALUES (?,?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, latitude, longitude, accuracy, now.toISOString(), 'DITOLAK', 'LOKASI');
+				await db.run('INSERT INTO kehadiran (id,user_id,day,photo_name,photo_data,latitude,longitude,accuracy,captured_at,verification,rejection_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, req.file.buffer, latitude, longitude, accuracy, now.toISOString(), 'DITOLAK', 'LOKASI');
 			} catch (error) {
 				await fs.promises.unlink(path.join(photoDir, photoName)).catch(() => {});
 				if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Foto kehadiran hari ini sudah tercatat.' });
@@ -2336,7 +2349,7 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 		if (existing) {
 			const photoName = `${existing.id}${extension}`;
 			await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer, true);
-			await db.run('UPDATE kehadiran SET photo_name=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="MENUNGGU", rejection_reason=NULL WHERE id=?', photoName, latitude, longitude, accuracy, now.toISOString(), existing.id);
+			await db.run('UPDATE kehadiran SET photo_name=?, photo_data=?, latitude=?, longitude=?, accuracy=?, captured_at=?, verification="MENUNGGU", rejection_reason=NULL WHERE id=?', photoName, req.file.buffer, latitude, longitude, accuracy, now.toISOString(), existing.id);
 			if (existing.photo_name && existing.photo_name !== photoName) {
 				await fs.promises.unlink(path.join(photoDir, path.basename(existing.photo_name))).catch(() => {});
 			}
@@ -2348,7 +2361,7 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 		const id = crypto.randomUUID(), photoName = `${id}${extension}`;
 		await writeFileAtomic(path.join(photoDir, photoName), req.file.buffer);
 		try {
-			await db.run('INSERT INTO kehadiran (id,user_id,day,photo_name,latitude,longitude,accuracy,captured_at,verification) VALUES (?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, latitude, longitude, accuracy, now.toISOString(), 'MENUNGGU');
+			await db.run('INSERT INTO kehadiran (id,user_id,day,photo_name,photo_data,latitude,longitude,accuracy,captured_at,verification) VALUES (?,?,?,?,?,?,?,?,?,?)', id, req.user.id, day, photoName, req.file.buffer, latitude, longitude, accuracy, now.toISOString(), 'MENUNGGU');
 		} catch (error) {
 			await fs.promises.unlink(path.join(photoDir, photoName)).catch(() => {});
 			if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Foto kehadiran hari ini sudah tercatat.' });
@@ -2374,12 +2387,30 @@ app.get('/api/attendance/mine', requireActiveUser, async (req, res, next) => {
 
 app.get('/api/attendance/:id/photo', requireActiveUser, async (req, res, next) => {
 	try {
-		const db = await databasePromise, record = await db.get('SELECT user_id,photo_name FROM kehadiran WHERE id=?', req.params.id);
+		const db = await databasePromise, record = await db.get('SELECT user_id,photo_name,photo_data FROM kehadiran WHERE id=?', req.params.id);
 		if (!record || (record.user_id !== req.user.id && req.user.role !== 'ADMIN')) return res.status(404).json({ error: 'Foto tidak ditemukan.' });
-		if (!record.photo_name) return res.status(404).json({ error: 'File foto tidak ditemukan.' });
-		const photoPath = path.join(photoDir, path.basename(record.photo_name));
-		if (!fs.existsSync(photoPath)) return res.status(404).json({ error: 'File foto tidak ditemukan.' });
-		const buffer = await fs.promises.readFile(photoPath);
+		if (!record.photo_name && !record.photo_data) return res.status(404).json({ error: 'File foto tidak ditemukan.' });
+
+		let buffer = null;
+		const photoPath = record.photo_name ? path.join(photoDir, path.basename(record.photo_name)) : null;
+
+		// 1. Coba baca dari disk jika tersedia
+		if (photoPath && fs.existsSync(photoPath)) {
+			try {
+				const diskBuf = await fs.promises.readFile(photoPath);
+				if (diskBuf && diskBuf.length > 0) buffer = diskBuf;
+			} catch (_) {}
+		}
+
+		// 2. Pulihkan otomatis dari database jika file di disk hilang / wadah restart di Railway
+		if (!buffer && record.photo_data && record.photo_data.length > 0) {
+			buffer = record.photo_data;
+			if (photoPath) {
+				writeFileAtomic(photoPath, buffer, true).catch(() => {});
+			}
+		}
+
+		if (!buffer || buffer.length === 0) return res.status(404).json({ error: 'File foto tidak ditemukan.' });
 		const mimeType = getImageMimeType(buffer);
 		if (!mimeType) return res.status(415).json({ error: 'Format file foto rusak atau tidak didukung.' });
 		res.set('Cache-Control', 'private, no-store');

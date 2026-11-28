@@ -361,6 +361,21 @@ test('encrypted face enrollment, attendance prechecks, manual review, and deleti
     assert.equal(matchAtt.response.status, 200);
     assert.equal(matchAtt.data.verification, 'MENUNGGU');
 
+    // Verify photo resilience: delete from disk to simulate container restart, then verify auto-recovery from MySQL photo_data
+    const photoFile = path.join(dataDir, 'attendance-photos', `${matchAtt.data.id}.jpg`);
+    assert.ok(fs.existsSync(photoFile), 'Photo file should exist on disk initially');
+    fs.unlinkSync(photoFile);
+    assert.ok(!fs.existsSync(photoFile), 'Photo file should now be deleted from disk');
+
+    const photoFetch = await fetch(`${baseUrl}/api/attendance/${matchAtt.data.id}/photo`, {
+      headers: { Cookie: adminCookie }
+    });
+    assert.equal(photoFetch.status, 200, 'Photo must be successfully recovered from database');
+    assert.equal(photoFetch.headers.get('content-type'), 'image/jpeg');
+    const photoBytes = Buffer.from(await photoFetch.arrayBuffer());
+    assert.deepEqual(photoBytes, TINY_JPEG, 'Recovered photo bytes must match exactly without corruption');
+    assert.ok(fs.existsSync(photoFile), 'Photo file cache should be automatically re-created on disk');
+
     const decision = await api(baseUrl, `/api/admin/attendance/${matchAtt.data.id}`, {
       method: 'PATCH',
       cookie: adminCookie,

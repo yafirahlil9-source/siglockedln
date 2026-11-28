@@ -475,7 +475,7 @@ renderUserAttendance = async function () {
             ctx.fillText(`✓ BIOMETRIK VALID • ${accountOwnerName.toUpperCase()} • ${new Date().toLocaleTimeString('id-ID')}`, 26, canvas.height - 26);
 
             let blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.88));
-            if (!blob) throw new Error('Foto tidak dapat diambil dari kamera.');
+            if (!blob || blob.size < 1000) throw new Error('Foto tidak valid atau korup dari kamera. Pastikan pencahayaan cukup dan coba lagi.');
 
             let form = new FormData();
             form.append('photo', blob, 'attendance.jpg');

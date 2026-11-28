@@ -902,9 +902,17 @@ addTaskForm = function () {
 function showAttendancePhotoError(image) {
     const wrapper = image.closest('.attendance-photo-wrap');
     if (!wrapper) return;
+    if (!image.dataset.retried) {
+        image.dataset.retried = '1';
+        setTimeout(() => {
+            image.src = image.src.split('?')[0] + '?retry=' + Date.now();
+        }, 1200);
+        return;
+    }
     wrapper.classList.add('photo-unavailable');
     image.hidden = true;
-    wrapper.querySelector('.photo-unavailable-label').hidden = false;
+    const label = wrapper.querySelector('.photo-unavailable-label');
+    if (label) label.hidden = false;
 }
 
 function bindAttendancePhotoFallbacks(container = document) {
