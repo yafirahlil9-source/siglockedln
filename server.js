@@ -2267,22 +2267,22 @@ app.post('/api/attendance/photo', sameOrigin, requireActiveUser, photoUpload.sin
 		const userFace = await db.get('SELECT face_descriptor FROM pengguna WHERE id=?', req.user.id);
 		const storedDescriptor = parseFaceDescriptor(userFace?.face_descriptor);
 		if (!storedDescriptor) {
-			return res.status(403).json({ error: 'Data wajah biometrik akun Anda belum terdaftar. Harap daftarkan wajah di menu Profil terlebih dahulu agar kehadiran dapat diverifikasi.' });
+			return res.status(403).json({ error: 'Absen ditolak. Wajah belum didaftarkan di sistem. Harap daftarkan wajah di menu Profil terlebih dahulu agar kehadiran dapat diverifikasi.' });
 		}
 		const submittedDescriptor = parseFaceDescriptor(req.body?.faceDescriptor);
 		if (!submittedDescriptor) {
-			return res.status(403).json({ error: 'Verifikasi biometrik wajah wajib dilakukan melalui kamera sebelum mengirim absensi.' });
+			return res.status(403).json({ error: 'Absen ditolak. Verifikasi biometrik wajah wajib dilakukan melalui kamera sebelum mengirim absensi.' });
 		}
 		const faceDistance = euclideanDistance(submittedDescriptor, storedDescriptor);
 		if (faceDistance >= FACE_MATCH_THRESHOLD) {
-			return res.status(403).json({ error: 'Pemeriksaan awal wajah tidak cocok dengan data akun. Silakan ulangi di depan kamera.' });
+			return res.status(403).json({ error: 'Absen ditolak. Wajah tidak cocok dengan data akun terdaftar. Wajah lain tidak dapat digunakan untuk absensi.' });
 		}
 		const now = new Date(), localTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now);
 		const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
 		const existing = await db.get('SELECT id, photo_name, verification, rejection_reason FROM kehadiran WHERE user_id=? AND day=?', req.user.id, day);
 		if (existing?.verification === 'DITOLAK' && existing?.rejection_reason === 'LOKASI') {
 			return res.status(403).json({
-				error: 'Absen hari ini telah ditolak permanen karena dilakukan di luar jangkauan sekolah. Anda masuk ke daftar Tidak Masuk hari ini.',
+				error: 'Absen ditolak. Absen hari ini telah ditolak permanen karena dilakukan di luar jangkauan sekolah. Anda masuk ke daftar Tidak Masuk hari ini.',
 				id: existing.id,
 				verification: 'DITOLAK',
 				rejectionReason: 'LOKASI',
